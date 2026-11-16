@@ -18,7 +18,7 @@ func tokenText(_ x:Any?)->String {guard let n=x as? NSNumber else{return "未知
 func tokenBrief(_ x:Any?)->String {guard let n=x as? NSNumber else{return "未知"};return compactNumber(n.doubleValue)}
 func mixBrief(_ value:Any?)->String {
     let mix=value as? [String:Any] ?? [:]
-    return (mix["incomplete"] as? Bool == true ? "≥":"")+tokenBrief(mix["total"])
+    return tokenBrief(mix["total"])
 }
 func compactNumber(_ x:Double)->String {
     if x >= 1000000000 {return String(format:"%.2fB",x/1000000000)}
@@ -149,19 +149,18 @@ final class Model: ObservableObject {
     var headline:String {
         if metric == "month_tokens" {
             let mix=snapshot["current_mix"] as? [String:Any] ?? [:]
-            return number(snapshot["current_count"]) > 0 ? ((mix["incomplete"] as? Bool == true ? "≥":"")+compactNumber(number(mix["total"]))):"—"
+            return number(snapshot["current_count"]) > 0 ? compactNumber(number(mix["total"])):"—"
         }
         let today=metric == "today_cost"
         let count=number(snapshot[today ? "today_count":"current_count"])
         let unknown=number(snapshot[today ? "today_unpriced":"current_unpriced"])
         guard count > unknown else{return "—"}
         let amount=number(snapshot[today ? "today_amount":"current_amount"])
-        let prefix=unknown > 0 ? "≥":""
         if metric == "plan_ratio" {
             let total=number(snapshot["current_plan"])
-            return total > 0 ? prefix+String(format:"%.2f×",amount/total):"—"
+            return total > 0 ? String(format:"%.2f×",amount/total):"—"
         }
-        return prefix+money(amount)
+        return money(amount)
     }
     func setMetric(_ value:String) {
         metric=value;send("display-preferences",["metric":value])
@@ -742,7 +741,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         status.button?.sendAction(on:[.leftMouseUp,.rightMouseUp])
         model.onChange={ [weak self] in
             guard let self=self else{return}
-            self.status.button?.title=self.model.headline.replacingOccurrences(of:"≥",with:"")
+            self.status.button?.title=self.model.headline
             self.status.button?.toolTip="AI Cost Companion · \(self.model.metricLabel) · API 等价估算，仅已定价部分"
             if self.model.historyActive {
                 self.model.sourceWatcherActive=self.sourceWatcher.start()
