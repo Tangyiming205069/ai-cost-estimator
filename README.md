@@ -44,6 +44,8 @@ Records from other devices, unsynced cloud sessions, deleted history, unsupporte
 
 ## Pricing is an estimate
 
+Pricing review starts with each agent's official billing documentation, then the exact model provider for missing token-rate details. [Source policy and verified decisions](PRICING.md) distinguish credits, subscription charges and API-equivalent references. The app exposes both agent rules and model price links.
+
 This is an **API-equivalent estimate, not an invoice, subscription charge or guaranteed saving**. Prices are the explicit, dated first-party reference snapshot in [pricing.json](LMCost/pricing.json), with source URLs and exact model IDs. Historical usage is evaluated using that snapshot, not reconstructed historical rates. Configured model/tier metadata cannot prove there was no provider-side routing fallback. Tools, tax and region surcharges are not included.
 
 Input/cache relationships and write TTL requirements are model-specific. Reasoning already included in output is not added again. Only complete, supported events are priced. Missing subscription metadata is left unknown; optional plan recognition requires separate consent and is a reference, not actual payment history.

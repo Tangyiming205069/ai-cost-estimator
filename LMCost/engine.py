@@ -425,6 +425,8 @@ class Engine:
                 write_total=sum(e.get('write_total') or 0 for e in sub),
                 cache_accounting=p.get('cache_accounting','separate_writes'),mix=token_mix(sub),
                 cost_buckets=priced_components(sub),rates=p,
+                pricing_basis=CATALOG['reference_basis'],
+                agent_price_source=CATALOG.get('agent_review',{}).get(key[1],{}).get('source',''),
                 source=p.get('source',CATALOG['sources'].get('anthropic' if p.get('provider')=='anthropic' else 'openai','')))
             self._row_cache[key]=r;return r
         def combine_mix(rows):

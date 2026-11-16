@@ -175,5 +175,31 @@
       "max_context": 1050000,
       "source": "https://developers.openai.com/api/docs/models/gpt-5.6-sol"
     }
+  },
+  "reference_basis": "api_equivalent",
+  "source_policy": "Review the agent's official billing rules first. Prefer applicable agent token rates; use exact upstream model prices for missing details. Never turn credits or subscriptions into an inferred invoice.",
+  "agent_review": {
+    "Codex": {
+      "checked": "2026-11-16",
+      "source": "https://learn.chatgpt.com/docs/pricing#token-rates",
+      "billing_units": [
+        "credits",
+        "subscription",
+        "contract",
+        "api_usd"
+      ],
+      "decision": "Credit billing has no separate cache-write charge. API-key usage follows OpenAI API prices. Current dollars are API-equivalent references, not credit consumption or subscription charges."
+    },
+    "Claude Code": {
+      "checked": "2026-11-16",
+      "source": "https://code.claude.com/docs/en/costs",
+      "fast_source": "https://code.claude.com/docs/en/fast-mode#understand-the-cost-tradeoff",
+      "billing_units": [
+        "subscription",
+        "contract",
+        "api_usd"
+      ],
+      "decision": "Agent docs publish Fast input/output prices and describe organization modelPricing overrides. Standard/cache details come from exact Anthropic model prices. Current dollars use first-party global API list rates, not private contracts or subscription invoices."
+    }
   }
 }

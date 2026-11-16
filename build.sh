@@ -27,7 +27,7 @@ cp LMCost/engine.py LMCost/codex_hook.py LMCost/subscriptions.py LMCost/history_
 import plistlib,sys
 from pathlib import Path
 app=Path(sys.argv[1]);python=sys.argv[2]
-info=dict(CFBundleExecutable='AI Cost Companion',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Companion',CFBundleDisplayName='AI Cost Companion',CFBundleVersion='1',CFBundleShortVersionString='0.1.0',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
+info=dict(CFBundleExecutable='AI Cost Companion',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Companion',CFBundleDisplayName='AI Cost Companion',CFBundleVersion='2',CFBundleShortVersionString='0.1.1',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
 with (app/'Contents/Info.plist').open('wb') as f:plistlib.dump(info,f)
 PY
 codesign --force --sign - "$APP"

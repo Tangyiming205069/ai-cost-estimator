@@ -12,6 +12,8 @@ Mark coverage as experimental until a real user validates a named client version
 
 ## Boundaries
 
+Follow [the pricing source order](PRICING.md): agent official billing rules first, then exact upstream model prices for missing details. Keep credits, contract charges and API-equivalent estimates separate; document source, date, applicability and unknown fields.
+
 Use supported public hooks, APIs or explicitly authorized local sources. No private UI injection, credential scraping, security changes or global window monitoring. Unknown fields stay unknown; do not copy a similarly named model's price. Price changes need an exact official source, check date, model ID and bucket semantics.
 
 Run `python3 -B -m unittest discover -s tests -v`. UI changes also need a native macOS build and actual window verification. Keep user histories and build products out of Git. Contributions are under the MIT license.
