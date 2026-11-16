@@ -1,6 +1,6 @@
 # Repository instructions
 
-Product: **AI Cost Companion**, the open-source desktop companion to AI Cost Estimator. Public credit: Eric Bush. Keep the original website estimator usable; companion work must not replace its existing functionality.
+Product: **AI Cost Estimator**, the open-source AI usage app from ai-cost-estimator.com. Public credit: Eric Bush. Keep the original website estimator usable; companion work must not replace its existing functionality.
 
 ## Pricing verification
 
@@ -23,3 +23,7 @@ Only collect after explicit user opt-in. Keep usage metadata on the local device
 Codex local history is validated on the development Mac. Claude Code is experimental until a real controlled CLI session is verified. Pi, OpenCode, Hermes and CLI footers are planned. An agent being able to install the app does not imply its usage adapter exists.
 
 Run `python3 -B -m unittest discover -s tests -v`. Native UI changes require a macOS build and real window verification. Keep generated applications, ledgers and private evidence out of Git. Do not claim a build is an installed, connected or notarized release.
+
+Fast requests use verified exact-model Fast API prices; if none is verified, use the same model’s Standard official price with a visible Standard-reference label. Do not infer unavailable tier information or multiply tokens/amounts by subscription-limit multipliers. Keep tier filters and subtotal breakdowns consistent with the unchanged raw request counts.
+
+Agent filters must be derived from actual recorded sources in the selected month. One source is a static label; show All only when multiple recorded sources exist. Never populate filters from a list of supported or planned adapters.

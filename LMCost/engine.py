@@ -1,4 +1,4 @@
-"""AI Cost Companion local-only ledger. History requires a separate explicit import."""
+"""AI Cost Estimator local-only ledger. History requires a separate explicit import."""
 from __future__ import annotations
 import datetime as dt
 from decimal import Decimal
@@ -41,6 +41,14 @@ def timestamp(value):
 def safe_model(v):
     return v if isinstance(v, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,100}', v) else 'unknown'
 
+def recorded_speed(event):
+    value=event.get('speed')
+    return value if value in ('normal','fast','flex','ultrafast') else 'unknown'
+
+def standard_fallback(event):
+    model=CATALOG['models'].get(event.get('model'))
+    return bool(model and event.get('speed')=='fast' and not model.get('fast_factor'))
+
 def price(event):
     """All or nothing per request: a partial number must never look fully priced."""
     if event.get('issue'):
@@ -58,7 +66,7 @@ def price(event):
     factor = Decimal(1)
     if speed in ('fast','flex','ultrafast') and p.get(speed+'_factor'):
         factor *= Decimal(str(p[speed+'_factor']))
-    elif speed != 'normal':
+    elif speed != 'normal' and not standard_fallback(event):
         return None, '档位缺失或未核价'
     prompt = sum(event[k] for k in buckets if k != 'output')
     if p['context'] == 'short' and event.get('context') != 'short':
@@ -77,6 +85,17 @@ def context_factor(p,prompt,bucket):
     if p.get('context')=='split_threshold' and prompt>p['threshold']:
         return Decimal(str(p['long_output_factor'] if bucket=='output' else p['long_input_factor']))
     return Decimal(1)
+
+def applied_rates(events,priced):
+    values={k:set() for k in BUCKETS}
+    for e,(amount,_) in zip(events,priced):
+        if amount is None:continue
+        p=CATALOG['models'][e['model']]
+        keys=('input','read','output') if p.get('cache_accounting')=='no_write_premium' else BUCKETS
+        prompt=sum(e[k] for k in keys if k!='output')
+        factor=Decimal(str(p.get(e.get('speed','')+'_factor',1)))
+        for k in keys:values[k].add(float(Decimal(str(p[k]))*factor*context_factor(p,prompt,k)))
+    return {k:sorted(rates) for k,rates in values.items()}
 
 def token_mix(events):
     """Disjoint known-token denominator; unknown portions are explicitly flagged."""
@@ -105,6 +124,21 @@ def priced_components(events):
         if total:
             for k,w in weights.items():values[k]+=amount*float(w/total)
     return values
+
+def speed_breakdown(events, priced=None):
+    """Partition recorded requests; never scale token counts or price twice."""
+    groups={}
+    for e,quote in zip(events,priced if priced is not None else [price(e) for e in events]):
+        speed=recorded_speed(e)
+        group=groups.setdefault(speed,{'events':[],'prices':[]})
+        group['events'].append(e);group['prices'].append(quote[0])
+    return [dict(speed=speed,count=len(groups[speed]['events']),
+                 request_share=len(groups[speed]['events'])/len(events),
+                 mix=token_mix(groups[speed]['events']),
+                 amount=sum(n for n in groups[speed]['prices'] if n is not None),
+                 unpriced=sum(n is None for n in groups[speed]['prices']),
+                 standard_fallback=sum(standard_fallback(e) and n is not None for e,n in zip(groups[speed]['events'],groups[speed]['prices'])))
+            for speed in ('normal','fast','flex','ultrafast','unknown') if speed in groups]
 
 def codex_event(payload, received=None):
     """Official PostModelRequest projection; no paths/content/identity retained.
@@ -249,9 +283,14 @@ class Ledger:
             return self._events
     def close(self):
         self.db.close()
-    def recent(self,limit=40):
+    def recent(self,limit=40,speed='all'):
         with self.lock:
-            return [json.loads(r[0]) for r in self.db.execute("SELECT body FROM events ORDER BY json_extract(body,'$.timestamp') DESC LIMIT ?",(limit,))]
+            where='';params=[]
+            if speed=='unknown':
+                where=" WHERE COALESCE(json_extract(body,'$.speed'),'unknown') NOT IN ('normal','fast','flex','ultrafast')"
+            elif speed in ('normal','fast','flex','ultrafast'):
+                where=" WHERE json_extract(body,'$.speed')=?";params.append(speed)
+            return [json.loads(r[0]) for r in self.db.execute("SELECT body FROM events"+where+" ORDER BY json_extract(body,'$.timestamp') DESC LIMIT ?",(*params,limit))]
     def reject(self, reason):
         with self.lock:
             self.db.execute('INSERT INTO diagnostics VALUES (?,1) ON CONFLICT(reason) DO UPDATE SET deliveries=deliveries+1', (reason,))
@@ -379,7 +418,7 @@ class Engine:
         report_version=report.stat().st_mtime_ns if report.exists() else 0
         sync_report=self.data/'history-sync-status.json'
         sync_version=sync_report.stat().st_mtime_ns if sync_report.exists() else 0
-        key=(self.mode,self.live.version(),len(self.demo),query.get('month'),query.get('agent'),query.get('model'),
+        key=(self.mode,self.live.version(),len(self.demo),query.get('month'),query.get('agent'),query.get('model'),query.get('speed'),
              json.dumps(self.settings,sort_keys=True),statuses,self.message,self.codex_enabled,
              self.receiver.accepted if self.receiver else None,self.receiver.rejected if self.receiver else None,
              dt.datetime.now().astimezone().date(),dt.datetime.now(dt.timezone.utc).date(),report_version,sync_version)
@@ -407,34 +446,41 @@ class Engine:
             for e in events[self._indexed_count:]:
                 mon=month(e)
                 group=(mon,e['agent'],e['model'])
-                self._groups.setdefault(group,[]).append(e);self._row_cache.pop(group,None)
+                self._groups.setdefault(group,[]).append(e)
+                for tier in ('all','normal','fast','flex','ultrafast','unknown'):self._row_cache.pop((group,tier),None)
                 if e.get('timestamp') and dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date()==today:
                     self._today.append(e);self._today_priced.append(price(e)[0])
                 if e.get('source')=='PostModelRequest':self._hook_count+=1
             self._indexed_count=len(events)
         months=sorted({current,*(k[0] for k in self._groups)},reverse=True)
         selected=query.get('month') or current
+        agents=sorted({k[1] for k in self._groups if k[0]==selected})
         agent=query.get('agent','全部');model=query.get('model','全部模型')
-        def row(key):
-            if key in self._row_cache:return self._row_cache[key]
-            sub=self._groups[key];m=key[2];priced=[price(e) for e in sub]
+        speed=query.get('speed','all')
+        if speed not in ('all','normal','fast','flex','ultrafast','unknown'):speed='all'
+        def row(key,tier='all'):
+            cache_key=(key,tier)
+            if cache_key in self._row_cache:return self._row_cache[cache_key]
+            sub=self._groups[key] if tier=='all' else [e for e in self._groups[key] if recorded_speed(e)==tier]
+            m=key[2];priced=[price(e) for e in sub]
             p=CATALOG['models'].get(m,{})
             r=dict(model=m,agent=key[1],count=len(sub),amount=sum(n for n,_ in priced if n is not None),
                 unpriced=sum(n is None for n,_ in priced),reason='；'.join(sorted({r for n,r in priced if n is None})),
                 buckets={k:(None if any(e.get(k) is None for e in sub) else sum(e[k] for e in sub)) for k in BUCKETS},
                 write_total=sum(e.get('write_total') or 0 for e in sub),
                 cache_accounting=p.get('cache_accounting','separate_writes'),mix=token_mix(sub),
-                cost_buckets=priced_components(sub),rates=p,
+                cost_buckets=priced_components(sub),rates=p,applied_rates=applied_rates(sub,priced),speeds=speed_breakdown(sub,priced),
+                standard_fallback=sum(standard_fallback(e) and n is not None for e,(n,_) in zip(sub,priced)),
                 pricing_basis=CATALOG['reference_basis'],
                 agent_price_source=CATALOG.get('agent_review',{}).get(key[1],{}).get('source',''),
                 source=p.get('source',CATALOG['sources'].get('anthropic' if p.get('provider')=='anthropic' else 'openai','')))
-            self._row_cache[key]=r;return r
+            self._row_cache[cache_key]=r;return r
         def combine_mix(rows):
             values={k:sum(r['mix']['values'][k] for r in rows) for k in ('input','read','write','output')}
             return dict(values=values,total=sum(values.values()),incomplete=any(r['mix']['incomplete'] for r in rows))
         keys=[k for k in self._groups if k[0]==selected and (agent=='全部' or k[1]==agent)]
         models=sorted({k[2] for k in keys})
-        rows=sorted([row(k) for k in keys if model=='全部模型' or k[2]==model],key=lambda r:r['amount'],reverse=True)
+        rows=sorted([r for k in keys if (model=='全部模型' or k[2]==model) and (r:=row(k,speed))['count']],key=lambda r:r['amount'],reverse=True)
         current_rows=[row(k) for k in self._groups if k[0]==current]
         amount=sum(r['amount'] for r in rows)
         with self.subscription_lock: statuses={k:dict(v) for k,v in self.subscriptions.items()}
@@ -450,12 +496,14 @@ class Engine:
         sync['active']=bool(self.history_sync and self.history_sync.thread and self.history_sync.thread.is_alive() and not self.history_sync.stop_event.is_set())
         sync['enabled']=self.settings.get('history_sync_enabled') is True
         activity=[]
-        for e in (sorted(self.demo,key=lambda e:e.get('timestamp',''),reverse=True)[:40] if self.mode=='demo' else self.live.recent()):
+        for e in (sorted([e for e in self.demo if speed=='all' or recorded_speed(e)==speed],key=lambda e:e.get('timestamp',''),reverse=True)[:40] if self.mode=='demo' else self.live.recent(speed=speed)):
             amount_event,reason=price(e)
             activity.append(dict(id=e['id'],timestamp=e.get('timestamp'),received_at=e.get('received_at'),
                 model=e['model'],agent=e['agent'],conversation=e.get('conversation'),amount=amount_event,reason=reason,
+                speed=recorded_speed(e),standard_fallback=standard_fallback(e) and amount_event is not None,
                 input=e.get('input'),read=e.get('read'),write=e.get('write_total'),output=e.get('output'),mix=token_mix([e])))
-        return dict(mode=self.mode,months=months,month=selected,selected_agent=agent,selected_model=model,models=models,rows=rows,history=history,history_sync=sync,activity=activity,
+        return dict(mode=self.mode,months=months,month=selected,agents=agents,selected_agent=agent,selected_model=model,selected_speed=speed,models=models,rows=rows,history=history,history_sync=sync,activity=activity,
+            standard_fallback=sum(r['standard_fallback'] for r in rows),
             amount=amount,unpriced=sum(r['unpriced'] for r in rows),count=sum(r['count'] for r in rows),
             current=current,current_count=sum(r['count'] for r in current_rows),current_amount=sum(r['amount'] for r in current_rows),
             current_unpriced=sum(r['unpriced'] for r in current_rows),plan=plan,plans=plans,
@@ -505,12 +553,12 @@ class Engine:
         config={'hooks':{'PostModelRequest':[{'hooks':[{'type':'command','command':command,'timeout':3}]}]}}
         (folder/'hooks.fragment.json').write_text(json.dumps(config,ensure_ascii=False,indent=2)+'\n')
         (folder/'请先阅读.txt').write_text(
-            'AI Cost Companion · Codex 接入准备（未安装、未信任、未开启）\n\n'
+            'AI Cost Estimator · Codex 接入准备（未安装、未信任、未开启）\n\n'
             '这里的 hooks.fragment.json 只是待合并片段，不会被 Codex 自动发现。\n'
             '如决定使用，将它的 PostModelRequest 条目合并到你选定的官方 hooks.json 中，保留全部现有条目。'
             '不要直接覆盖已有文件。CLI 用 /hooks，桌面用 Review hooks 或 Settings > Hooks 审阅并信任；'
             '不修改信任数据库、不使用绕过选项。现有会话能否热载入尚未验证，必要时新开会话。\n\n'
-            '随后回到 AI Cost Companion 点击“允许本次接收…”并同意。应用运行时每 3 秒续约，退出/停止或超过 12 秒无续约即拒收。'
+            '随后回到 AI Cost Estimator 点击“允许本次接收…”并同意。应用运行时每 3 秒续约，退出/停止或超过 12 秒无续约即拒收。'
             '不需要 API key，不读取 transcript_path/cwd，不上传。只保存散列去重 ID、接收时间、模型和 token 桶。\n\n'
             '兼容证据：本机 CLI 0.166.0-alpha.5.1 在隔离配置中识别该事件，未信任。'
             '未验证桌面真实事件。公开 main schema 提供 response_id 或 thread_id/request_id/attempt_number；'
@@ -563,7 +611,7 @@ class Engine:
         # -f avoids shell startup files changing exporters. Settings apply to this new session only.
         cmd = ' '.join(shlex.quote(x) for x in [str(p),'--setting-sources','','--settings',str(sf)])
         launcher = self.data/'Start Claude.command'
-        guard = "if /usr/bin/env | /usr/bin/cut -d= -f1 | /usr/bin/grep -Eq '^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY|BETA_TRACING|ENABLE_ENHANCED_TELEMETRY|CLAUDE_CODE_ENHANCED_TELEMETRY)'; then\n  print 'Existing telemetry environment detected. AI Cost Companion did not start a new session.'\n  exit 1\nfi\n"
+        guard = "if /usr/bin/env | /usr/bin/cut -d= -f1 | /usr/bin/grep -Eq '^(OTEL_|CLAUDE_CODE_ENABLE_TELEMETRY|BETA_TRACING|ENABLE_ENHANCED_TELEMETRY|CLAUDE_CODE_ENHANCED_TELEMETRY)'; then\n  print 'Existing telemetry environment detected. AI Cost Estimator did not start a new session.'\n  exit 1\nfi\n"
         launcher.write_text('#!/bin/zsh -f\n'+guard+'cd '+shlex.quote(project)+' || exit 1\nexec '+cmd+'\n')
         os.chmod(launcher,0o700)
         self.mode='live'

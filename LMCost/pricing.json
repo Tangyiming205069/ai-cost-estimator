@@ -201,5 +201,9 @@
       ],
       "decision": "Agent docs publish Fast input/output prices and describe organization modelPricing overrides. Standard/cache details come from exact Anthropic model prices. Current dollars use first-party global API list rates, not private contracts or subscription invoices."
     }
+  },
+  "fast_reference_policy": {
+    "checked": "2026-11-16",
+    "rule": "Use the exact model official Fast API rate when verified. If no Fast rate is verified, use the same model official Standard rate as a visibly labeled reference. Never multiply token counts or add subscription/credit usage multipliers. Missing model prices, required usage fields and unknown tiers remain unpriced."
   }
 }

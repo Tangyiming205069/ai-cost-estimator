@@ -52,6 +52,20 @@ func mixBrief(_ value:Any?)->String {
     let mix=value as? [String:Any] ?? [:]
     return tokenBrief(mix["total"])
 }
+func speedName(_ value:Any?)->String {
+    switch value as? String {
+    case "normal":return "Standard"
+    case "fast":return "Fast"
+    case "flex":return "Flex"
+    case "ultrafast":return "Ultrafast"
+    default:return "档位未知"
+    }
+}
+func rateText(_ value:Any?)->String {
+    guard let values=value as? [NSNumber],let first=values.first,let last=values.last else{return "—"}
+    let low=String(format:"$%.3g",first.doubleValue)
+    return values.count==1 ? low:low+"–"+String(format:"$%.3g",last.doubleValue)
+}
 func compactNumber(_ x:Double)->String {
     if x >= 1000000000 {return String(format:"%.2fB",x/1000000000)}
     if x >= 1000000 {return String(format:"%.2fM",x/1000000)}
@@ -73,6 +87,7 @@ final class Model: ObservableObject {
     @Published var agent = "全部"
     @Published var month = ""
     @Published var selectedModel = "全部模型"
+    @Published var selectedSpeed = "all"
     @Published var error = ""
     @Published var selectedRow = ""
     @Published var codexPlan = ""
@@ -94,7 +109,10 @@ final class Model: ObservableObject {
         // Preserve the original user's opted-in ledger without moving or copying it.
         let legacy=Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("LM Cost Data",isDirectory:true)
         if FileManager.default.fileExists(atPath:legacy.appendingPathComponent("usage.sqlite3").path) {return legacy}
-        return FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("AI Cost Companion",isDirectory:true)
+        let support=FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0]
+        let previous=support.appendingPathComponent("AI Cost Companion",isDirectory:true)
+        if FileManager.default.fileExists(atPath:previous.appendingPathComponent("usage.sqlite3").path) {return previous}
+        return support.appendingPathComponent("AI Cost Estimator",isDirectory:true)
     }()
     func start() {
         let p = Process()
@@ -130,7 +148,8 @@ final class Model: ObservableObject {
         if let s = obj["snapshot"] as? [String:Any] {
             guard (month.isEmpty || s["month"] as? String == month),
                   (s["selected_agent"] as? String ?? "全部") == agent,
-                  (s["selected_model"] as? String ?? "全部模型") == selectedModel else { return }
+                  (s["selected_model"] as? String ?? "全部模型") == selectedModel,
+                  (s["selected_speed"] as? String ?? "all") == selectedSpeed else { return }
             snapshot = s
             loading = false
             if month.isEmpty { month = s["month"] as? String ?? "" }
@@ -151,11 +170,11 @@ final class Model: ObservableObject {
         }
     }
     func send(_ action: String = "snapshot", _ extras: [String:Any] = [:]) {
-        var q: [String:Any] = ["action":action,"month":month,"agent":agent,"model":selectedModel]
+        var q: [String:Any] = ["action":action,"month":month,"agent":agent,"model":selectedModel,"speed":selectedSpeed]
         q.merge(extras) { _,new in new }
         if let data = try? JSONSerialization.data(withJSONObject:q) {
             do { try input?.write(contentsOf: data + Data([10])) }
-            catch { self.error = "本机服务已断开，请重新打开 AI Cost Companion。" }
+            catch { self.error = "本机服务已断开，请重新打开 AI Cost Estimator。" }
         }
     }
     func filter() { selectedRow = ""; loading = true; send() }
@@ -224,7 +243,7 @@ final class Model: ObservableObject {
     func connectHistory() {
         let alert=NSAlert()
         alert.messageText=L("连接 Codex 本机用量自动同步")
-        alert.informativeText=L("AI Cost Companion 打开期间，收到此 Mac 的 Codex 历史文件变化通知就检查新增用量，另每 5 秒补查。Codex 将请求用量写入本机后才会显示，不是逐 token 流。\n\n仅保存时间、模型、token 桶、档位与散列去重 ID；不保存对话正文或账户身份，不上传。不会修改 Codex 配置、hook 或遥测。\n\n这个选择会记住；以后打开 AI Cost Companion 会继续同步，退出即停止，可随时暂停。不会创建登录项。")
+        alert.informativeText=L("AI Cost Estimator 打开期间，收到此 Mac 的 Codex 历史文件变化通知就检查新增用量，另每 5 秒补查。Codex 将请求用量写入本机后才会显示，不是逐 token 流。\n\n仅保存时间、模型、token 桶、档位与散列去重 ID；不保存对话正文或账户身份，不上传。不会修改 Codex 配置、hook 或遥测。\n\n这个选择会记住；以后打开 AI Cost Estimator 会继续同步，退出即停止，可随时暂停。不会创建登录项。")
         alert.addButton(withTitle:L("连接并自动同步"));alert.addButton(withTitle:L("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else{return}
         send("enable-history-sync",["consent":true])
@@ -241,7 +260,7 @@ final class Model: ObservableObject {
         if binary == nil {
             let file = NSOpenPanel()
             file.title=L("选择已安装的 Claude Code 可执行文件")
-            file.message=L("常见位置未找到 Claude Code。请选官方 CLI；AI Cost Companion 不会自动安装。")
+            file.message=L("常见位置未找到 Claude Code。请选官方 CLI；AI Cost Estimator 不会自动安装。")
             file.canChooseFiles=true; file.canChooseDirectories=false; file.allowsMultipleSelection=false
             guard file.runModal() == .OK else { return }
             binary=file.url?.path
@@ -351,7 +370,7 @@ struct CostView: View {
             if model.expanded {
                 VStack(spacing:0) {
                     HStack(spacing:10) {
-                        LText("AI Cost Companion").font(.system(size:14,weight:.semibold))
+                        LText("AI Cost Estimator").font(.system(size:14,weight:.semibold))
                         Spacer()
                         HStack(spacing:5) {
                             Circle().fill(statusColor).frame(width:5,height:5)
@@ -370,7 +389,7 @@ struct CostView: View {
                             Button(L("补录到现在")) {model.send("sync-history-once",["consent":true])}
                             Divider()
                             Button(L(model.demo ? "返回真实账本":"试用虚构演示")) {
-                                model.month="";model.selectedModel="全部模型"
+                                model.month="";model.selectedModel="全部模型";model.selectedSpeed="all"
                                 model.send("mode",["value":model.demo ? "live":"demo"])
                             }
                         } label:{Image(systemName:"ellipsis").frame(width:22,height:22)}
@@ -429,12 +448,19 @@ struct CostView: View {
         }
     }
     var usage:some View {
-        VStack(alignment:.leading,spacing:16) {
+        let agents=model.snapshot["agents"] as? [String] ?? []
+        return VStack(alignment:.leading,spacing:16) {
             HStack(spacing:12) {
                 Picker(L("月份"),selection:$model.month) {ForEach(model.snapshot["months"] as? [String] ?? [],id:\.self){LText($0)}}
-                    .labelsHidden().frame(width:128).onChange(of:model.month){model.selectedModel="全部模型";model.filter()}
-                Picker(L("Agent"),selection:$model.agent) {ForEach(["全部","Codex","Claude Code"],id:\.self){LText($0 == "全部" ? "全部 Agent":$0).tag($0)}}
-                    .labelsHidden().frame(width:136).onChange(of:model.agent){model.selectedModel="全部模型";model.filter()}
+                    .labelsHidden().frame(width:128).onChange(of:model.month){model.agent="全部";model.selectedModel="全部模型";model.filter()}
+                if agents.count>1 {
+                    Picker(L("Agent"),selection:$model.agent) {
+                        LText("全部 Agent").tag("全部")
+                        ForEach(agents,id:\.self){LText($0).tag($0)}
+                    }.labelsHidden().frame(width:136).onChange(of:model.agent){model.selectedModel="全部模型";model.filter()}
+                } else {
+                    LText(agents.first ?? "暂无来源").foregroundStyle(.secondary).padding(.horizontal,10).padding(.vertical,4).background(Color.primary.opacity(0.05),in:Capsule())
+                }
                 Spacer()
                 LText("USD · \(model.snapshot["timezone"] as? String ?? "UTC") 自然月").font(.system(size:10)).foregroundStyle(.secondary)
             }.controlSize(.small).font(.system(size:11))
@@ -457,32 +483,51 @@ struct CostView: View {
                 Button(L("计算口径")) {model.tab="价格"}.buttonStyle(.plain).foregroundStyle(.secondary)
             }.font(.system(size:10)).foregroundStyle(.secondary)
                 .localizedHelp("按历史配置模型、档位及当前官网价格估算。不是实际扣款，历史覆盖可能不完整。")
+            if number(model.snapshot["standard_fallback"])>0 {
+                LText("\(Int(number(model.snapshot["standard_fallback"]))) 次 Fast 按普通价参考").font(.system(size:10)).foregroundStyle(.secondary)
+            }
             MixBar(mix:model.snapshot["mix"] as? [String:Any] ?? [:]).id(model.language).padding(.vertical,3)
             Divider().opacity(0.4)
             HStack {
                 LText("模型明细").font(.system(size:12,weight:.semibold))
                 Spacer()
+                speedPicker
                 Picker(L("模型"),selection:$model.selectedModel) {
                     LText("全部模型").tag("全部模型")
                     ForEach(model.snapshot["models"] as? [String] ?? [],id:\.self){LText($0)}
                 }.labelsHidden().frame(width:190).controlSize(.small).font(.system(size:10)).onChange(of:model.selectedModel){model.filter()}
             }
             ScrollView {
-                LazyVStack(spacing:0) {
+                VStack(spacing:0) {
                     if model.rows.isEmpty {LText("这个月尚无已收录的用量").font(.system(size:12)).foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:120)}
                     ForEach(Array(model.rows.enumerated()),id:\.offset) {_,row in modelRow(row)}
-                }
+                }.frame(width:596,alignment:.leading)
             }.frame(minHeight:0,maxHeight:.infinity)
         }
+    }
+    var speedPicker:some View {
+        Picker(L("档位"),selection:$model.selectedSpeed) {
+            LText("全部档位").tag("all")
+            LText("Standard").tag("normal")
+            LText("Fast").tag("fast")
+            LText("Ultrafast").tag("ultrafast")
+            LText("Flex").tag("flex")
+            LText("档位未知").tag("unknown")
+        }.labelsHidden().frame(width:130).controlSize(.small).font(.system(size:10)).onChange(of:model.selectedSpeed){model.filter()}
     }
     func modelRow(_ row:[String:Any])->some View {
         let id=row["model"] as? String ?? ""
         let opened=model.selectedRow == id
+        let speeds=row["speeds"] as? [[String:Any]] ?? []
+        let fastCount=speeds.filter{["fast","ultrafast"].contains($0["speed"] as? String ?? "")}.reduce(0){$0+Int(number($1["count"]))}
         return VStack(alignment:.leading,spacing:10) {
             Button {model.selectedRow=opened ? "":id} label:{
                 HStack(spacing:12) {
                     VStack(alignment:.leading,spacing:4) {
-                        LText(id).font(.system(size:12,weight:.medium))
+                        HStack(spacing:7) {
+                            LText(id).font(.system(size:12,weight:.medium))
+                            if fastCount>0 {LText("加速 \(fastCount) 次请求").font(.system(size:9,weight:.medium)).foregroundStyle(.blue).padding(.horizontal,6).padding(.vertical,2).background(Color.blue.opacity(0.08),in:Capsule())}
+                        }
                         HStack(spacing:6) {
                             LText(mixBrief(row["mix"])+" tokens")
                             LText("· \(Int(number(row["count"]))) 次请求")
@@ -496,6 +541,7 @@ struct CostView: View {
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain).localizedAccessibilityLabel("\(id) 明细")
             if opened {
+                speedTable(speeds)
                 MixBar(mix:row["mix"] as? [String:Any] ?? [:],detailed:false).id(model.language)
                 bucketTable(row)
                 if let reason=row["reason"] as? String,!reason.isEmpty {LText(reason).font(.system(size:10)).foregroundStyle(.orange)}
@@ -503,6 +549,30 @@ struct CostView: View {
             }
             Divider().opacity(0.25)
         }.padding(.vertical,9)
+    }
+    func speedTable(_ speeds:[[String:Any]])->some View {
+        VStack(spacing:7) {
+            HStack {
+                LText("记录档位");Spacer()
+                LText("请求 / 占比").frame(width:110,alignment:.trailing)
+                LText("Token").frame(width:100,alignment:.trailing)
+                LText("API 等价值").frame(width:100,alignment:.trailing)
+            }.foregroundStyle(.secondary)
+            ForEach(Array(speeds.enumerated()),id:\.offset) {_,s in
+                HStack {
+                    VStack(alignment:.leading,spacing:2) {
+                        LText(speedName(s["speed"])).fontWeight(.medium)
+                        if number(s["standard_fallback"])>0 {LText("普通价参考").font(.system(size:9)).foregroundStyle(.secondary)}
+                    }
+                    Spacer()
+                    LText("\(Int(number(s["count"]))) · \(String(format:"%.1f%%",number(s["request_share"])*100))").frame(width:110,alignment:.trailing)
+                    LText(mixBrief(s["mix"])).frame(width:100,alignment:.trailing)
+                    LText(number(s["count"])>number(s["unpriced"]) ? usd(number(s["amount"])):"未定价").frame(width:100,alignment:.trailing)
+                }.monospacedDigit()
+            }
+            LText("按记录档位分组；占比按请求数。Token 不翻倍；Fast 优先用官方 Fast 价，无已核验 Fast 价时用同模型普通价参考。")
+                .foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)
+        }.font(.system(size:10)).padding(10).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:9))
     }
     var activity:some View {
         VStack(alignment:.leading,spacing:14) {
@@ -512,13 +582,16 @@ struct CostView: View {
                     LText("此 Mac 的全部已落盘对话 · 最新 40 条").font(.system(size:11)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                HStack(spacing:5) {Circle().fill(statusColor).frame(width:5,height:5);LText(model.historyActive ? "正在跟进":"已暂停")}
-                    .font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
+                VStack(alignment:.trailing,spacing:8) {
+                    HStack(spacing:5) {Circle().fill(statusColor).frame(width:5,height:5);LText(model.historyActive ? "正在跟进":"已暂停")}
+                        .font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
+                    speedPicker
+                }
             }
             LText("请求用量写入本机后自动更新；未定价请求也会显示 token。").font(.system(size:10)).foregroundStyle(.secondary)
             Divider().opacity(0.35)
             ScrollView {
-                LazyVStack(spacing:0) {
+                VStack(spacing:0) {
                     ForEach(Array(model.activity.enumerated()),id:\.offset) {index,e in
                         HStack(alignment:.top,spacing:12) {
                             VStack(spacing:6) {
@@ -528,6 +601,7 @@ struct CostView: View {
                             VStack(alignment:.leading,spacing:5) {
                                 HStack {
                                     LText(e["model"] as? String ?? "未知模型").font(.system(size:12,weight:.medium))
+                                    LText(speedName(e["speed"])+((e["standard_fallback"] as? Bool == true) ? " · 普通价参考":"")).font(.system(size:9,weight:.medium)).foregroundStyle(.secondary).padding(.horizontal,6).padding(.vertical,2).background(Color.primary.opacity(0.05),in:Capsule())
                                     LText(model.timeOnly(e["timestamp"])).font(.system(size:9,design:.monospaced)).foregroundStyle(.secondary)
                                     Spacer()
                                     LText(mixBrief(e["mix"])+" tokens").font(.system(size:12,weight:.medium,design:.rounded)).monospacedDigit()
@@ -553,7 +627,7 @@ struct CostView: View {
     }
     func bucketTable(_ row:[String:Any]) -> some View {
         let buckets=row["buckets"] as? [String:Any] ?? [:]
-        let rates=row["rates"] as? [String:Any] ?? [:]
+        let rates=row["applied_rates"] as? [String:Any] ?? [:]
         let costs=row["cost_buckets"] as? [String:Any] ?? [:]
         let noWrite=row["cache_accounting"] as? String == "no_write_premium"
         let codex=row["agent"] as? String == "Codex"
@@ -561,18 +635,19 @@ struct CostView: View {
         let names=["input":"普通输入","read":"缓存读取","write_short":codex ? "缓存写入 · 30m":"缓存写入 · 5m","write_long":codex ? "缓存写入 · 12h":"缓存写入 · 1h","output":"输出（含推理）"]
         return VStack(spacing:6) {
             Divider().opacity(0.35)
-            HStack {LText("Token 桶");Spacer();LText("数量").frame(width:95,alignment:.trailing);LText("基础价 / 百万").frame(width:100,alignment:.trailing);LText("已定价费用").frame(width:100,alignment:.trailing)}.foregroundStyle(.secondary)
+            HStack {LText("Token 桶");Spacer();LText("数量").frame(width:95,alignment:.trailing);LText("适用单价 / 百万").frame(width:100,alignment:.trailing);LText("已定价费用").frame(width:100,alignment:.trailing)}.foregroundStyle(.secondary)
             ForEach(keys,id:\.self) {k in
                 HStack {
                     LText(names[k] ?? k);Spacer()
                     LText(tokenText(buckets[k])).frame(width:95,alignment:.trailing)
-                    LText(rates[k] == nil ? "—":String(format:"$%.3g",number(rates[k]))).frame(width:100,alignment:.trailing)
+                    LText(rateText(rates[k])).frame(width:100,alignment:.trailing)
                     LText(number(row["count"]) > number(row["unpriced"]) ? usd(number(costs[k])):"—").frame(width:100,alignment:.trailing)
                 }.monospacedDigit()
             }
             if number(row["unpriced"]) > 0 {LText("数量含未定价请求；费用只合计已完整定价的请求。").foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)}
-            LText(noWrite ? "缓存写入包含在普通输入中，无独立写入费。":"基础价列为 Standard；费用按每条请求已确认的档位计算，写入总量不再累加。")
+            LText("单价按记录档位与上下文计算；多种单价显示区间。普通价参考会单独标注。")
                 .foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)
+            if noWrite {LText("缓存写入包含在普通输入中，无独立写入费。").foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)}
         }.font(.system(size:10))
     }
     var settings:some View {
@@ -720,7 +795,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.onLanguageChange = { [weak self] in self?.rebuildMenus() }
         panel=FloatingPanel(contentRect:NSRect(x:0,y:0,width:188,height:40),
             styleMask:[.borderless,.nonactivatingPanel],backing:.buffered,defer:false)
-        panel.title="AI Cost Companion"
+        panel.title="AI Cost Estimator"
         panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent=true
         panel.isMovableByWindowBackground=false; panel.level = .floating
         panel.hidesOnDeactivate=false; panel.isReleasedWhenClosed=false
@@ -752,7 +827,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.onChange={ [weak self] in
             guard let self=self else{return}
             self.status.button?.title=self.model.headline
-            self.status.button?.toolTip=L("AI Cost Companion · \(self.model.metricLabel) · API 等价估算，仅已定价部分")
+            self.status.button?.toolTip=L("AI Cost Estimator · \(self.model.metricLabel) · API 等价估算，仅已定价部分")
             if self.model.historyActive {
                 self.model.sourceWatcherActive=self.sourceWatcher.start()
             } else {self.sourceWatcher.stop();self.model.sourceWatcherActive=false}
@@ -771,10 +846,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func rebuildMenus() {
         let mainMenu=NSMenu()
-        let appItem=NSMenuItem(title:"AI Cost Companion",action:nil,keyEquivalent:"")
-        let appMenu=NSMenu(title:"AI Cost Companion")
+        let appItem=NSMenuItem(title:"AI Cost Estimator",action:nil,keyEquivalent:"")
+        let appMenu=NSMenu(title:"AI Cost Estimator")
         appMenu.addItem(withTitle:L("显示 / 隐藏浮窗"),action:#selector(menuToggle),keyEquivalent:"l").target=self
-        appMenu.addItem(withTitle:L("退出 AI Cost Companion"),action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
+        appMenu.addItem(withTitle:L("退出 AI Cost Estimator"),action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
         appItem.submenu=appMenu;mainMenu.addItem(appItem)
         let editItem=NSMenuItem(title:L("编辑"),action:nil,keyEquivalent:"")
         let edit=NSMenu(title:L("编辑"))
@@ -848,7 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             menu.addItem(withTitle:L("显示 / 隐藏浮窗"),action:#selector(menuToggle),keyEquivalent:"").target=self
             menu.addItem(withTitle:L("打开应用所在文件夹"),action:#selector(reveal),keyEquivalent:"").target=self
             menu.addItem(.separator())
-            menu.addItem(withTitle:L("退出 AI Cost Companion"),action:#selector(quit),keyEquivalent:"q").target=self
+            menu.addItem(withTitle:L("退出 AI Cost Estimator"),action:#selector(quit),keyEquivalent:"q").target=self
             status.menu=menu; status.button?.performClick(nil); status.menu=nil
         } else {toggleVisible()}
     }

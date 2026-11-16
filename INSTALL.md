@@ -1,4 +1,4 @@
-# Install AI Cost Companion
+# Install AI Cost Estimator
 
 This preview is a local source build. There is no notarized one-click binary yet. You can give this page to your coding agent; no special agent plugin or API key is required for installation.
 
@@ -23,7 +23,7 @@ The installer stops if these requirements are missing. It does not install depen
 To build and install somewhere else without opening it:
 
 ```bash
-bash scripts/install.sh --destination "$HOME/Downloads/AI Cost Companion.app" --no-open
+bash scripts/install.sh --destination "$HOME/Downloads/AI Cost Estimator.app" --no-open
 ```
 
 The destination must not exist. Updates use a new destination; no existing app or data is removed automatically. The Python executable is recorded locally in the built bundle; do not distribute that local build as a portable binary.

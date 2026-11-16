@@ -1,15 +1,16 @@
-# AI Cost Companion
+# AI Cost Estimator
 
-**What is your AI plan really worth?** An open-source AI usage tracker and companion to [AI Cost Estimator](https://ai-cost-estimator.com).
+**What is your AI plan really worth?** An open-source AI usage tracker from [AI Cost Estimator](https://ai-cost-estimator.com).
 
 [Website](https://ai-cost-estimator.com/companion) · [Install](INSTALL.md) · [Contribute](CONTRIBUTING.md) · [MIT license](LICENSE)
 
 Keep a compact native window beside your coding agent. See this month's API-equivalent cost, then expand into model breakdowns, input/output/cache token shares and recent individual requests. The menu bar shows the amount without an extra product abbreviation. The original website's estimator, pricing catalog and tokenizer remain separate and available.
 
-## Preview release · v0.2.0
+## Preview release · v0.3.0
 
 - Native Liquid Glass on macOS 26; 188 × 40 pt floating window, draggable and position-restoring.
-- Monthly, agent and exact-model filters; input, cache read/write and output accounting.
+- Monthly, agent, exact-model and recorded-speed filters; input, cache read/write and output accounting. Agent choices come only from recorded sources in the selected month; a single source is shown without a redundant dropdown.
+- Standard / Fast breakdowns show request shares, unchanged token counts and API values. Fast uses its verified official rate; absent a verified Fast rate, the same model’s Standard price is visibly labeled as a reference.
 - Opt-in local Codex history sync, filesystem notifications plus a five-second fallback; the UI refreshes every second. Records appear after the client writes request usage, not as a per-token stream.
 - Recent requests show time, model, anonymous conversation marker and token buckets. Historical records without a marker remain labeled as historical requests.
 - Unknown prices or required fields remain unpriced; zero is never used as a substitute for unknown.
@@ -33,13 +34,13 @@ bash scripts/install.sh --check
 bash scripts/install.sh
 ```
 
-The second command builds and installs in `~/Applications/AI Cost Companion.app` and opens it. Connect Codex explicitly in the app to start collection. Installing does not enable collection. A custom destination and `--no-open` are supported. Existing apps are never overwritten.
+The second command builds and installs in `~/Applications/AI Cost Estimator.app` and opens it. Connect Codex explicitly in the app to start collection. Installing does not enable collection. A custom destination and `--no-open` are supported. Existing apps are never overwritten.
 
 ## Privacy and coverage
 
 The ledger stays on this computer. It retains usage timestamps, model/provider fields, disjoint token buckets, hashed request/conversation identifiers and accounting completeness state. It does not save prompts, responses, credentials or account identity, and does not upload usage. Codex transcript lines are streamed locally and discarded, retaining only the required metadata.
 
-New installations store data in `~/Library/Application Support/AI Cost Companion`. A legacy ledger beside the app is reused in place if present, preserving existing opt-in preferences. No login item is created. Quit or pause to stop collection; reopening resumes only a previously authorized connection.
+New installations store data in `~/Library/Application Support/AI Cost Estimator`. Existing AI Cost Companion Application Support data or a legacy ledger beside the app is reused in place if present, preserving existing opt-in preferences. No login item is created. Quit or pause to stop collection; reopening resumes only a previously authorized connection.
 
 Records from other devices, unsynced cloud sessions, deleted history, unsupported old formats and collection gaps are not included. Forked/inherited requests and retries require stable identities to avoid double counting. Parent totals must not be added again to child requests.
 
@@ -58,6 +59,6 @@ python3 -B -m unittest discover -s tests -v
 bash build.sh
 ```
 
-56 synthetic tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering and notification-driven refresh. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Companion.
+62 synthetic tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering and notification-driven refresh. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
 
 The macOS UI is in `LMCost/App.swift`; the shared Python ledger and pricing engine are in `engine.py`; adapters are in `history_import.py`, `history_sync.py`, `codex_hook.py` and `subscriptions.py`. A richer cross-agent adapter API and native CLI footers are future work, not included features.

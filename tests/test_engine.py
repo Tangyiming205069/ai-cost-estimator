@@ -51,7 +51,7 @@ class Pricing(unittest.TestCase):
         self.assertAlmostEqual(engine.price(e)[0],0.00545005)
     def test_missing_unknown_fast_long(self):
         for changes in ({'input':None},{'output':-1},{'read':True},{'model':'claude-opus-5-5-new'},
-                        {'speed':'unknown'},{'model':'claude-sonnet-5-5','speed':'fast'},
+                        {'speed':'unknown'},{'model':'claude-sonnet-5-5','speed':'flex'},
                         {'agent':'Codex','model':'gpt-6.1-sol','input':None}):
             self.assertIsNone(engine.price(event(**changes))[0])
     def test_openai_long_context_entire_request_and_components(self):

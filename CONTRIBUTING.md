@@ -1,6 +1,6 @@
 # Contributing
 
-AI Cost Companion is maintained by Eric Bush and shares its product home with AI Cost Estimator.
+AI Cost Estimator is maintained by Eric Bush and shares its product home with AI Cost Estimator.
 
 ## Agent adapters
 

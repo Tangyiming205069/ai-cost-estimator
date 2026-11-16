@@ -15,3 +15,9 @@ Agent billing rules reviewed on **2026-11-16**. The API rate snapshot has its ow
 The supported model table and cache accounting remain explicit in [pricing.json](LMCost/pricing.json). Rates are not fetched live by the app. Historical months use this dated reference snapshot, not reconstructed historical prices. Promotions must be rechecked at expiry. Local model/tier metadata does not prove which backend tier actually served a request.
 
 Pi, OpenCode, Hermes and other adapters are not implemented. Before adding one, repeat this source review for the actual agent and provider route. Installation by an agent does not imply its usage collection is supported. No confidence percentage is invented: evidence is stated as official rate verified, usage fields complete or incomplete, and coverage validated or experimental.
+
+## Fast references and visible tiers
+
+As requested by the product owner on 2026-11-16, a recorded Fast request uses the exact model’s verified official Fast API rate. If the snapshot has no verified Fast rate, the same model’s official Standard rate is used and labeled **Standard-price reference** in the ledger and request detail. This is a reference fallback, not a claim that the vendor bills Fast at Standard. Unknown model IDs, missing required token buckets and unknown tiers stay unpriced. Subscription allowance multipliers never change token counts or multiply API values again. Model totals are the sum of request values; tier filters partition those same requests.
+
+Current [Codex speed rules](https://learn.chatgpt.com/docs/agent-configuration/speed) distinguish 2.5× included allowance consumption from 2× purchased credits. [GPT-6.1 Sol API pricing](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and [GPT-6 Astra API pricing](https://developers.openai.com/api/docs/models/gpt-6-astra) explicitly price Fast at 2× their applicable API rates. These are separate accounting units.
