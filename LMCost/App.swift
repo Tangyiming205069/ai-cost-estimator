@@ -457,7 +457,6 @@ struct CostView: View {
                 MixBar(mix:row["mix"] as? [String:Any] ?? [:],detailed:false)
                 bucketTable(row)
                 if let reason=row["reason"] as? String,!reason.isEmpty {Text(reason).font(.system(size:10)).foregroundStyle(.orange)}
-                if let source=row["agent_price_source"] as? String,!source.isEmpty,let url=URL(string:source) {Link("Agent 官方计费规则 ↗",destination:url).font(.system(size:10))}
                 if let url=URL(string:row["source"] as? String ?? "") {Link("API 等价参考价 · \(model.snapshot["checked"] as? String ?? "") ↗",destination:url).font(.system(size:10))}
             }
             Divider().opacity(0.25)
@@ -655,17 +654,6 @@ struct CostView: View {
     var prices: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:16) {
-                Text("先核对 Agent，再核对模型").font(.system(size:19,weight:.semibold))
-                Text("Agent 计费规则核对：2026-11-16。先查 Agent 官方费率与适用条件；未提供的 token 单价再查实际模型官网。单位、档位或来源不能确认时，不猜测实际扣款。当前金额始终是 API 等价参考。")
-                    .font(.system(size:12)).foregroundColor(dim).lineSpacing(4)
-                Link("Codex 官方 credits / 套餐 / API 规则 ↗",destination:URL(string:"https://learn.chatgpt.com/docs/pricing#token-rates")!)
-                Text("Codex credits 没有独立缓存写入费；API key 按 API 价表计费。订阅额度、credits 和 API 等价美元不能混算，本工具尚不计算实际 credits 扣减。")
-                    .font(.system(size:11)).foregroundColor(dim)
-                Link("Claude Code 官方费用与组织费率 ↗",destination:URL(string:"https://code.claude.com/docs/en/costs")!)
-                Link("Claude Code Fast 官方单价 ↗",destination:URL(string:"https://code.claude.com/docs/en/fast-mode#understand-the-cost-tradeoff")!)
-                Text("Claude Code 的会话金额也可能采用组织 modelPricing；该设置不是实际发票。此处采用首方 API 公开价，尚未验证组织合同价。Fast 输入/输出先核对 Agent 文档，缓存等缺项再核对模型文档。")
-                    .font(.system(size:11)).foregroundColor(dim)
-                Divider()
                 Text("API 报价快照：2026-11-15").font(.system(size:19,weight:.semibold))
                 Text("USD / 100 万 token · 首方 API、global、非 Batch 的固定参考口径。只估算 token；工具、税费、实际地域附加费与订阅扣款不包含。历史月份也使用此快照重新估算，不伪装历史账单。")
                     .font(.system(size:12)).foregroundColor(dim).lineSpacing(4)
