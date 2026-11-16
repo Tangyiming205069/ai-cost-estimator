@@ -1,6 +1,6 @@
 # Repository instructions
 
-Product: **AI Cost Estimator**, the open-source AI usage app from ai-cost-estimator.com. Public credit: Eric Bush. Keep the original website estimator usable; companion work must not replace its existing functionality.
+Product: **AI Cost Estimator**, the open-source AI usage app from ai-cost-estimator.com. Canonical public repository: `Tangyiming205069/ai-cost-estimator`. Public credit: Eric Bush. Keep the original website estimator usable; companion work must not replace its existing functionality.
 
 ## Pricing verification
 

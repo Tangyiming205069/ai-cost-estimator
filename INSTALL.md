@@ -13,7 +13,7 @@ The installer stops if these requirements are missing. It does not install depen
 
 ## Reproducible source installation
 
-1. Choose the newest published source preview on [official releases](https://github.com/Tangyiming205069/ai-cost-estimator-companion/releases). Clone `https://github.com/Tangyiming205069/ai-cost-estimator-companion.git` into a new directory, check out that exact release tag and record its commit SHA before building. Do not install from an unreviewed third-party fork.
+1. Choose the newest published source preview on [official releases](https://github.com/Tangyiming205069/ai-cost-estimator/releases). Clone `https://github.com/Tangyiming205069/ai-cost-estimator.git` into a new directory, check out that exact release tag and record its commit SHA before building. Do not install from an unreviewed third-party fork.
 2. Read `build.sh` and `scripts/install.sh` before running them.
 3. Run `bash scripts/install.sh --check`.
 4. Run `bash scripts/install.sh`. It builds, checks the local ad-hoc signature, installs in the user's `~/Applications`, and opens the app. It never writes to system `/Applications`.
