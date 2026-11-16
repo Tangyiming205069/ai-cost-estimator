@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+.build-cache/
+dist/
+*.app/
+*.sqlite3*
+LM Cost Data/
+AI Cost Companion Data/
+.env*
+private/
