@@ -22,12 +22,12 @@ OUT=${COMPANION_OUTPUT_DIR:-"$PWD/dist"}
 APP="$OUT/AI Cost Companion.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" .build-cache
 "$SWIFT" -module-cache-path "$PWD/.build-cache" -sdk "$SDK" -target arm64-apple-macosx26.0 -O LMCost/App.swift -o "$APP/Contents/MacOS/AI Cost Companion"
-cp LMCost/engine.py LMCost/codex_hook.py LMCost/subscriptions.py LMCost/history_import.py LMCost/history_sync.py LMCost/pricing.json "$APP/Contents/Resources/"
+cp LMCost/engine.py LMCost/codex_hook.py LMCost/subscriptions.py LMCost/history_import.py LMCost/history_sync.py LMCost/pricing.json LMCost/localization.en.json "$APP/Contents/Resources/"
 "$COMPANION_PYTHON" -B - "$APP" "$COMPANION_PYTHON" <<'PY'
 import plistlib,sys
 from pathlib import Path
 app=Path(sys.argv[1]);python=sys.argv[2]
-info=dict(CFBundleExecutable='AI Cost Companion',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Companion',CFBundleDisplayName='AI Cost Companion',CFBundleVersion='4',CFBundleShortVersionString='0.1.3',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
+info=dict(CFBundleExecutable='AI Cost Companion',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Companion',CFBundleDisplayName='AI Cost Companion',CFBundleVersion='5',CFBundleShortVersionString='0.2.0',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
 with (app/'Contents/Info.plist').open('wb') as f:plistlib.dump(info,f)
 PY
 codesign --force --sign - "$APP"

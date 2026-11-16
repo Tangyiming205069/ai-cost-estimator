@@ -1,18 +1,19 @@
 # AI Cost Companion
 
-**Your AI costs. Always in view.** The open-source macOS companion to [AI Cost Estimator](https://ai-cost-estimator.com).
+**What is your AI plan really worth?** An open-source AI usage tracker and companion to [AI Cost Estimator](https://ai-cost-estimator.com).
 
 [Website](https://ai-cost-estimator.com/companion) · [Install](INSTALL.md) · [Contribute](CONTRIBUTING.md) · [MIT license](LICENSE)
 
 Keep a compact native window beside your coding agent. See this month's API-equivalent cost, then expand into model breakdowns, input/output/cache token shares and recent individual requests. The menu bar shows the amount without an extra product abbreviation. The original website's estimator, pricing catalog and tokenizer remain separate and available.
 
-## Preview release · v0.1.0
+## Preview release · v0.2.0
 
 - Native Liquid Glass on macOS 26; 188 × 40 pt floating window, draggable and position-restoring.
 - Monthly, agent and exact-model filters; input, cache read/write and output accounting.
 - Opt-in local Codex history sync, filesystem notifications plus a five-second fallback; the UI refreshes every second. Records appear after the client writes request usage, not as a per-token stream.
 - Recent requests show time, model, anonymous conversation marker and token buckets. Historical records without a marker remain labeled as historical requests.
 - Unknown prices or required fields remain unpriced; zero is never used as a substitute for unknown.
+- English / 中文, switchable in Settings or the window menu; your choice is remembered.
 - Pause and resume, amount/token display choices, and Control–Option–L hide/show.
 - Collection is off by default. Demo data is only shown when explicitly selected.
 
@@ -25,7 +26,7 @@ Keep a compact native window beside your coding agent. See this month's API-equi
 
 ## Install
 
-Read [INSTALL.md](INSTALL.md). This release is built locally from source and is not a notarized downloadable binary. Requirements: Apple silicon, macOS 26+, Apple Swift SDK 26+ and Python 3.14+. The installer never installs dependencies or changes security settings. Native UI is currently Chinese; English localization is welcome.
+Read [INSTALL.md](INSTALL.md). This release is built locally from source and is not a notarized downloadable binary. Requirements: Apple silicon, macOS 26+, Apple Swift SDK 26+ and Python 3.14+. The installer never installs dependencies or changes security settings. The native app supports English and Chinese. The current desktop app is macOS-only; Windows, Linux and terminal displays are not released yet. The shared ledger and pricing engine are open source, and platform contributions are welcome.
 
 ```bash
 bash scripts/install.sh --check

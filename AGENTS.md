@@ -14,7 +14,7 @@ Read [PRICING.md](PRICING.md) before changing pricing or adding an agent adapter
 
 ## Product interface
 
-Verification workflow, contributor instructions and technical audit notes belong in this repository, not on the product landing page or in the app's normal user flow. Display plain amounts in the compact window and menu bar; do not prefix amounts or token totals with inequality symbols. Keep partial-coverage and unpriced details in the expanded ledger. Show users the amount, monthly/model/token breakdowns, connection status, clickable price sources, and concise estimate/coverage limitations. Do not present the development process as a product feature.
+Verification workflow, contributor instructions and technical audit notes belong in this repository, not on the product landing page or in the app's normal user flow. Display plain amounts in the compact window and menu bar; do not prefix amounts or token totals with inequality symbols. Position the product as an open-source AI usage tool; identify the current macOS-only GUI without claiming unreleased platforms. Language switching belongs in the native app; do not infer a website localization request. English and Chinese must display the same ledger and preserve collection consent. Keep partial-coverage and unpriced details in the expanded ledger. Show users the amount, monthly/model/token breakdowns, connection status, clickable price sources, and concise estimate/coverage limitations. Do not present the development process as a product feature.
 
 ## Privacy and coverage
 

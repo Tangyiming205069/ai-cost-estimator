@@ -17,7 +17,8 @@ The installer stops if these requirements are missing. It does not install depen
 2. Read `build.sh` and `scripts/install.sh` before running them.
 3. Run `bash scripts/install.sh --check`.
 4. Run `bash scripts/install.sh`. It builds, checks the local ad-hoc signature, installs in the user's `~/Applications`, and opens the app. It never writes to system `/Applications`.
-5. Choose whether to connect Codex in the app. Installation is not collection consent. Do not use a model request to test a connection without the user's authorization.
+5. Choose English or 中文 in Settings → Language (also available in the window’s More menu). The choice persists after restart.
+6. Choose whether to connect Codex in the app. Installation is not collection consent. Do not use a model request to test a connection without the user's authorization.
 
 To build and install somewhere else without opening it:
 
