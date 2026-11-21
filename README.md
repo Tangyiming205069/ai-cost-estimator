@@ -59,10 +59,12 @@ python3 -B -m unittest discover -s tests -v
 bash build.sh
 ```
 
-62 synthetic tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering and notification-driven refresh. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
+63 synthetic tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering and notification-driven refresh. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
 
 The macOS UI is in `LMCost/App.swift`; the shared Python ledger and pricing engine are in `engine.py`; adapters are in `history_import.py`, `history_sync.py`, `codex_hook.py` and `subscriptions.py`. A richer cross-agent adapter API and native CLI footers are future work, not included features.
 
 ## Windows source preview
 
 See [Windows setup](windows/README.md). A compact always-on-top Tk window uses the same ledger and exact-model pricing engine, with monthly/model/tier filters, token shares and request-tier details. Collection requires explicit consent. Windows validation uses synthetic records; real Windows Codex sessions, WSL and Claude Code remain unverified.
+
+The macOS expanded window starts with a monthly value overview. Detailed model/token tables are one click away. Remaining subscription allowance and historical reset counts are not inferred from token usage; unavailable values are labeled explicitly. Both window sizes use native Liquid Glass on macOS 26.

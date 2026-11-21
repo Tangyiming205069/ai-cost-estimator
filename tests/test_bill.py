@@ -5,6 +5,19 @@ import engine
 from test_engine import event
 
 class Bill(unittest.TestCase):
+    def test_plan_comparison_uses_only_recorded_agents(self):
+        with tempfile.TemporaryDirectory() as d:
+            app=engine.Engine(d)
+            self.assertIsNone(app.snapshot({'month':'2026-11'})['plan'])
+            app.live.add(event(id='only-codex',agent='Codex',model='gpt-6.1-sol'))
+            app.settings['plan_overrides']={'Codex':20}
+            self.assertEqual(app.snapshot({'month':'2026-11'})['plan'],20)
+            app.live.add(event(id='claude-too'))
+            self.assertIsNone(app.snapshot({'month':'2026-11'})['plan'])
+            app.settings['plan_overrides']['Claude Code']=20
+            self.assertEqual(app.snapshot({'month':'2026-11'})['plan'],40)
+            self.assertEqual(app.snapshot({'month':'2026-11','agent':'Codex'})['plan'],20)
+            app.close()
     def test_agent_choices_come_only_from_recorded_month_sources(self):
         with tempfile.TemporaryDirectory() as d:
             app=engine.Engine(d)

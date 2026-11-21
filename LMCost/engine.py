@@ -486,9 +486,10 @@ class Engine:
         with self.subscription_lock: statuses={k:dict(v) for k,v in self.subscriptions.items()}
         overrides=self.settings.get('plan_overrides',{})
         plans={k:overrides.get(k,statuses[k].get('reference_usd')) for k in statuses}
-        chosen=list(plans) if agent=='全部' else [agent]
-        plan=sum(plans[k] for k in chosen) if all(plans[k] is not None for k in chosen) else None
-        current_plan=sum(plans.values()) if all(v is not None for v in plans.values()) else None
+        chosen=agents if agent=='全部' else [agent]
+        plan=sum(plans[k] for k in chosen) if chosen and all(plans.get(k) is not None for k in chosen) else None
+        current_agents=sorted({r['agent'] for r in current_rows})
+        current_plan=sum(plans[k] for k in current_agents) if current_agents and all(plans.get(k) is not None for k in current_agents) else None
         try:history=json.loads((self.data/'history-import-status.json').read_text()) if self.mode=='live' else {}
         except (OSError,ValueError):history={}
         from history_sync import HistorySync

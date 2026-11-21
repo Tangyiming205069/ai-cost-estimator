@@ -83,7 +83,7 @@ final class Model: ObservableObject {
     }
     @Published var snapshot: [String: Any] = [:]
     @Published var expanded = false
-    @Published var tab = "用量"
+    @Published var tab = "概览"
     @Published var agent = "全部"
     @Published var month = ""
     @Published var selectedModel = "全部模型"
@@ -399,10 +399,10 @@ struct CostView: View {
                     }.buttonStyle(.plain).padding(.horizontal,22).padding(.top,16).padding(.bottom,12)
                     HStack {
                         Picker(L("页面"),selection:$model.tab) {
-                            LText("总账单").tag("用量");LText("最近用量").tag("活动");LText("连接").tag("连接")
+                            LText("概览").tag("概览");LText("明细").tag("用量");LText("最近用量").tag("活动");LText("连接").tag("连接")
                             if model.tab == "价格" {LText("定价").tag("价格")}
                             if model.tab == "设置" {LText("设置").tag("设置")}
-                        }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:model.tab == "价格" || model.tab == "设置" ? 350:280)
+                        }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:model.tab == "价格" || model.tab == "设置" ? 420:340).onChange(of:model.tab) {if model.tab == "概览" {model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all";model.filter()}}
                         Spacer()
                     }.padding(.horizontal,22).padding(.bottom,14)
                     Divider().opacity(0.5)
@@ -429,7 +429,8 @@ struct CostView: View {
     }
     var expandedBody:some View {
         VStack(alignment:.leading,spacing:12) {
-            if model.tab == "用量" {usage}
+            if model.tab == "概览" {overview}
+            else if model.tab == "用量" {usage}
             else if model.tab == "活动" {activity}
             else if model.tab == "连接" {connections}
             else if model.tab == "设置" {settings}
@@ -445,6 +446,64 @@ struct CostView: View {
                 LText("· 北京时间").foregroundStyle(.tertiary)
             }.font(.system(size:9)).foregroundStyle(.secondary)
             .localizedHelp(model.historyLabel+"；只覆盖已写入这台 Mac 的用量。")
+        }
+    }
+    var overview:some View {
+        let s=model.snapshot
+        let valid=number(s["count"])>number(s["unpriced"])
+        let value=number(s["amount"])
+        let plan=s["plan"] as? NSNumber
+        let agents=s["agents"] as? [String] ?? []
+        return VStack(alignment:.leading,spacing:20) {
+            HStack {
+                Picker(L("月份"),selection:$model.month) {ForEach(s["months"] as? [String] ?? [],id:\.self){LText($0)}}.labelsHidden().frame(width:125).onChange(of:model.month){model.filter()}
+                LText(agents.joined(separator:" + ")).font(.system(size:11)).foregroundStyle(.secondary)
+                Spacer()
+                LText("每月回顾").font(.system(size:11)).foregroundStyle(.secondary)
+            }
+            HStack(spacing:14) {
+                VStack(alignment:.leading,spacing:10) {
+                    LText("参考月费").font(.system(size:12)).foregroundStyle(.secondary)
+                    LText(plan.map{money($0.doubleValue)} ?? "待确认").font(.system(size:30,weight:.medium,design:.rounded)).monospacedDigit()
+                    Button(L("查看套餐")){model.tab="设置"}.buttonStyle(.plain).font(.system(size:11)).foregroundStyle(.blue)
+                }.frame(maxWidth:.infinity,alignment:.leading).padding(20).background(Color.primary.opacity(0.04),in:RoundedRectangle(cornerRadius:18))
+                VStack(alignment:.leading,spacing:10) {
+                    LText("已用 API 等价值").font(.system(size:12)).foregroundStyle(.secondary)
+                    LText(valid ? money(value):"—").font(.system(size:30,weight:.medium,design:.rounded)).monospacedDigit()
+                    LText("按已收录用量折算").font(.system(size:11)).foregroundStyle(.secondary)
+                }.frame(maxWidth:.infinity,alignment:.leading).padding(20).background(Color.teal.opacity(0.10),in:RoundedRectangle(cornerRadius:18))
+            }
+            VStack(alignment:.leading,spacing:9) {
+                if let p=plan,p.doubleValue>0,valid {
+                    HStack(alignment:.firstTextBaseline,spacing:8) {
+                        LText(String(format:"%.1f×",value/p.doubleValue)).font(.system(size:34,weight:.medium,design:.rounded)).foregroundStyle(.teal)
+                        LText("参考月费的 API 用量价值").font(.system(size:13))
+                    }
+                    LText("这是用量价值对比，不是实际节省金额。").font(.system(size:11)).foregroundStyle(.secondary)
+                } else {
+                    LText("这月的订阅值不值？").font(.system(size:19,weight:.medium))
+                    LText("确认套餐月费后，就能在这里对比。").font(.system(size:12)).foregroundStyle(.secondary)
+                }
+            }
+            Divider().opacity(0.35)
+            HStack(alignment:.top,spacing:24) {
+                VStack(alignment:.leading,spacing:7) {
+                    LText("剩余额度").font(.system(size:11)).foregroundStyle(.secondary)
+                    LText("尚未接入").font(.system(size:17,weight:.medium))
+                }.frame(maxWidth:.infinity,alignment:.leading)
+                VStack(alignment:.leading,spacing:7) {
+                    LText("本月额度重置").font(.system(size:11)).foregroundStyle(.secondary)
+                    LText("暂无可靠记录").font(.system(size:17,weight:.medium))
+                }.frame(maxWidth:.infinity,alignment:.leading)
+            }
+            LText("当前记录的是用量；无法据此判断额度还剩多少，或重置过几次。").font(.system(size:11)).foregroundStyle(.secondary)
+            HStack {
+                Button(L("查看模型与费用明细")){model.tab="用量"}.buttonStyle(.borderedProminent).tint(.teal)
+                Spacer()
+                Button(L("查看最近用量")){model.tab="活动"}.buttonStyle(.plain).foregroundStyle(.secondary)
+            }.font(.system(size:12))
+            LText("仅本机已收录用量 · API 估算非账单 · 自然月非订阅账期").font(.system(size:10)).foregroundStyle(.secondary)
+            if number(s["unpriced"])>0 {LText("仍有未定价记录，金额仅包含可定价部分。").font(.system(size:10)).foregroundStyle(.secondary)}
         }
     }
     var usage:some View {
@@ -868,9 +927,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hosting.sizingOptions=[]
         hosting.frame=NSRect(origin:.zero,size:panel.frame.size)
         hosting.autoresizingMask=[]
-        if #available(macOS 26.0,*),!model.expanded {
+        if #available(macOS 26.0,*) {
             let glass=NSGlassEffectView(frame:NSRect(origin:.zero,size:panel.frame.size))
-            glass.style = .regular;glass.cornerRadius=20
+            glass.style = .clear;glass.cornerRadius=model.expanded ? 22:20
+            glass.wantsLayer=true;glass.layer?.masksToBounds=true;glass.layer?.cornerRadius=glass.cornerRadius
+            hosting.wantsLayer=true;hosting.layer?.backgroundColor=NSColor.clear.cgColor
             glass.contentView=hosting;panel.contentView=glass
         } else {
             let material=NSVisualEffectView(frame:NSRect(origin:.zero,size:panel.frame.size))
@@ -903,7 +964,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let d=try? JSONSerialization.data(withJSONObject:values) {try? d.write(to:model.dataURL.appendingPathComponent("window.json"),options:.atomic)}
     }
     func toggleExpanded() {
-        if !model.expanded {savedFrame=panel.frame}
+        if !model.expanded {savedFrame=panel.frame;model.tab="概览";model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all";model.filter()}
         let top=panel.frame.maxY
         model.expanded.toggle()
         panel.allowsKeyboard=model.expanded
