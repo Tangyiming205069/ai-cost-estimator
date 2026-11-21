@@ -15,3 +15,19 @@ with tempfile.TemporaryDirectory() as d:
     ui.language();ui.toggle();root.update();ui.close();engine.close()
     assert json.loads((Path(d)/'ui/windows-ui.json').read_text())['language']=='zh'
 print('Windows Tk window, filters, details, language and close passed with synthetic data.')
+
+# Exercise the production UTF-8 pipe and shutdown, without enabling collection.
+import time
+with tempfile.TemporaryDirectory() as d:
+    root=tk.Tk();ui=Window(root,d)
+    deadline=time.monotonic()+20
+    while not ui.snapshot and time.monotonic()<deadline:
+        root.update();time.sleep(.02)
+    assert ui.snapshot and not ui.snapshot['history_sync'].get('enabled')
+    assert ui.snapshot['count']==0
+    ui.send('mode',value='demo')
+    while ui.snapshot.get('mode')!='demo' and time.monotonic()<deadline:
+        root.update();time.sleep(.02)
+    assert ui.snapshot['mode']=='demo' and ui.snapshot['count']>0
+    child=ui.process;ui.close();assert child.poll() is not None
+print('Windows production bridge and explicit demo mode passed; collection stayed off.')
