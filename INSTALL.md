@@ -2,6 +2,8 @@
 
 This preview is a local source build. There is no notarized one-click binary yet. You can give this page to your coding agent; no special agent plugin or API key is required for installation.
 
+For Windows, use [Windows setup](windows/README.md). The instructions below are for macOS.
+
 ## Requirements
 
 - Apple silicon Mac running macOS 26 or newer.

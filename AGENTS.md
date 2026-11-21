@@ -14,7 +14,7 @@ Read [PRICING.md](PRICING.md) before changing pricing or adding an agent adapter
 
 ## Product interface
 
-Verification workflow, contributor instructions and technical audit notes belong in this repository, not on the product landing page or in the app's normal user flow. Display plain amounts in the compact window and menu bar; do not prefix amounts or token totals with inequality symbols. Position the product as an open-source AI usage tool; identify the current macOS-only GUI without claiming unreleased platforms. Language switching belongs in the native app; do not infer a website localization request. English and Chinese must display the same ledger and preserve collection consent. Keep partial-coverage and unpriced details in the expanded ledger. Show users the amount, monthly/model/token breakdowns, connection status, clickable price sources, and concise estimate/coverage limitations. Do not present the development process as a product feature.
+Verification workflow, contributor instructions and technical audit notes belong in this repository, not on the product landing page or in the app's normal user flow. Display plain amounts in the compact window and menu bar; do not prefix amounts or token totals with inequality symbols. Position the product as an open-source AI usage tool; identify macOS as locally verified and Windows as a source preview, without claiming real Windows agent coverage before validation. Language switching belongs in the native app; do not infer a website localization request. English and Chinese must display the same ledger and preserve collection consent. Keep partial-coverage and unpriced details in the expanded ledger. Show users the amount, monthly/model/token breakdowns, connection status, clickable price sources, and concise estimate/coverage limitations. Do not present the development process as a product feature.
 
 ## Privacy and coverage
 
@@ -27,3 +27,5 @@ Run `python3 -B -m unittest discover -s tests -v`. Native UI changes require a m
 Fast requests use verified exact-model Fast API prices; if none is verified, use the same model’s Standard official price with a visible Standard-reference label. Do not infer unavailable tier information or multiply tokens/amounts by subscription-limit multipliers. Keep tier filters and subtotal breakdowns consistent with the unchanged raw request counts.
 
 Agent filters must be derived from actual recorded sources in the selected month. One source is a static label; show All only when multiple recorded sources exist. Never populate filters from a list of supported or planned adapters.
+
+Windows source lives in `LMCost/windows_app.py`; entry and per-user installer are in `windows/`. Run the Windows CI GUI smoke with synthetic data. Do not enable collection or change execution policy during installation. WSL and Claude Code adapters are not exposed by the Windows UI.

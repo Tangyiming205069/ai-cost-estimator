@@ -27,7 +27,7 @@ Keep a compact native window beside your coding agent. See this month's API-equi
 
 ## Install
 
-Read [INSTALL.md](INSTALL.md). This release is built locally from source and is not a notarized downloadable binary. Requirements: Apple silicon, macOS 26+, Apple Swift SDK 26+ and Python 3.14+. The installer never installs dependencies or changes security settings. The native app supports English and Chinese. The current desktop app is macOS-only; Windows, Linux and terminal displays are not released yet. The shared ledger and pricing engine are open source, and platform contributions are welcome.
+Read [INSTALL.md](INSTALL.md). This release is built locally from source and is not a notarized downloadable binary. Requirements: Apple silicon, macOS 26+, Apple Swift SDK 26+ and Python 3.14+. The installer never installs dependencies or changes security settings. The native app supports English and Chinese. A Windows source preview is available; Linux and terminal displays are not released yet. Windows real-session collection has not been manually validated. The shared ledger and pricing engine are open source, and platform contributions are welcome.
 
 ```bash
 bash scripts/install.sh --check
@@ -62,3 +62,7 @@ bash build.sh
 62 synthetic tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering and notification-driven refresh. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
 
 The macOS UI is in `LMCost/App.swift`; the shared Python ledger and pricing engine are in `engine.py`; adapters are in `history_import.py`, `history_sync.py`, `codex_hook.py` and `subscriptions.py`. A richer cross-agent adapter API and native CLI footers are future work, not included features.
+
+## Windows source preview
+
+See [Windows setup](windows/README.md). A compact always-on-top Tk window uses the same ledger and exact-model pricing engine, with monthly/model/tier filters, token shares and request-tier details. Collection requires explicit consent. Windows validation uses synthetic records; real Windows Codex sessions, WSL and Claude Code remain unverified.

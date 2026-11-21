@@ -11,3 +11,15 @@ jobs:
         with:
           python-version: '3.14'
       - run: python -B -m unittest discover -s tests -v
+
+  windows-preview:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -B tests/windows_smoke.py
+      - run: python -B -m unittest discover -s tests -p test_bill.py -v
