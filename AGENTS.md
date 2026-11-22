@@ -29,3 +29,5 @@ Fast requests use verified exact-model Fast API prices; if none is verified, use
 Agent filters must be derived from actual recorded sources in the selected month. One source is a static label; show All only when multiple recorded sources exist. Never populate filters from a list of supported or planned adapters.
 
 Windows source lives in `LMCost/windows_app.py`; entry and per-user installer are in `windows/`. Run the Windows CI GUI smoke with synthetic data. Do not enable collection or change execution policy during installation. WSL and Claude Code adapters are not exposed by the Windows UI.
+
+Connections and plan settings list actual connected/previously used sources, not the supported-adapter catalog. Keep unused providers inside Add connection. Center the top navigation. Use regular native Liquid Glass for readable translucency; keep the rounded clipping.

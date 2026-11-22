@@ -381,6 +381,13 @@ class Engine:
         self.codex_enabled = False
         self.subscription_lock=threading.RLock()
         self.subscriptions={k:subscriptions.result() for k in ('Codex','Claude Code')}
+        try:
+            cached=json.loads((self.data/'subscription-cache.json').read_text())
+            for provider in self.subscriptions:
+                item=cached.get(provider,{})
+                if item.get('state')=='detected':
+                    self.subscriptions[provider]={k:v for k,v in item.items() if k in subscriptions.result() or k=='observed_at'}
+        except (OSError,ValueError,AttributeError):pass
         self.closed=False
         (self.data/'codex-consent.json').unlink(missing_ok=True)
         self.settings_file = self.data/'preferences.json'
@@ -503,7 +510,8 @@ class Engine:
                 model=e['model'],agent=e['agent'],conversation=e.get('conversation'),amount=amount_event,reason=reason,
                 speed=recorded_speed(e),standard_fallback=standard_fallback(e) and amount_event is not None,
                 input=e.get('input'),read=e.get('read'),write=e.get('write_total'),output=e.get('output'),mix=token_mix([e])))
-        return dict(mode=self.mode,months=months,month=selected,agents=agents,selected_agent=agent,selected_model=model,selected_speed=speed,models=models,rows=rows,history=history,history_sync=sync,activity=activity,
+        connected_agents=sorted({k[1] for k in self._groups} | ({'Codex'} if self.settings.get('history_sync_enabled') or self.codex_enabled else set()) | ({'Claude Code'} if self.receiver else set()))
+        return dict(mode=self.mode,months=months,month=selected,agents=agents,connected_agents=connected_agents,selected_agent=agent,selected_model=model,selected_speed=speed,models=models,rows=rows,history=history,history_sync=sync,activity=activity,
             standard_fallback=sum(r['standard_fallback'] for r in rows),
             amount=amount,unpriced=sum(r['unpriced'] for r in rows),count=sum(r['count'] for r in rows),
             current=current,current_count=sum(r['count'] for r in current_rows),current_amount=sum(r['amount'] for r in current_rows),
@@ -540,7 +548,11 @@ class Engine:
             except Exception:
                 status=subscriptions.result('暂时无法识别',state='unavailable',detail='官方登录状态未返回可用信息；不会读取凭据文件补猜。')
             with self.subscription_lock:
-                if not self.closed:self.subscriptions[agent]=status
+                if not self.closed:
+                    status['observed_at']=dt.datetime.now(dt.timezone.utc).isoformat()
+                    self.subscriptions[agent]=status
+                    cache=self.data/'subscription-cache.json'
+                    tmp=cache.with_suffix('.tmp');tmp.write_text(json.dumps(self.subscriptions));tmp.chmod(0o600);tmp.replace(cache)
         threading.Thread(target=worker,daemon=True).start()
     def codex_lease(self):
         f=self.data/'codex-consent.json'

@@ -248,5 +248,8 @@
   "查看模型与费用明细": "View model & cost details",
   "查看最近用量": "View recent usage",
   "仅本机已收录用量 · API 估算非账单 · 自然月非订阅账期": "Local records only · API estimate, not a bill · Calendar month, not billing cycle",
-  "仍有未定价记录，金额仅包含可定价部分。": "Some records are unpriced; the amount includes priced records only."
+  "仍有未定价记录，金额仅包含可定价部分。": "Some records are unpriced; the amount includes priced records only.",
+  "添加连接": "Add connection",
+  "未识别套餐": "Plan not identified",
+  "月费金额未返回": "Monthly price not returned"
 }

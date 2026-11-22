@@ -398,6 +398,7 @@ struct CostView: View {
                         Button(action:expand) {Image(systemName:"arrow.down.right.and.arrow.up.left").frame(width:22,height:22)}.localizedHelp("收起为小浮窗").localizedAccessibilityLabel("收起")
                     }.buttonStyle(.plain).padding(.horizontal,22).padding(.top,16).padding(.bottom,12)
                     HStack {
+                        Spacer()
                         Picker(L("页面"),selection:$model.tab) {
                             LText("概览").tag("概览");LText("明细").tag("用量");LText("最近用量").tag("活动");LText("连接").tag("连接")
                             if model.tab == "价格" {LText("定价").tag("价格")}
@@ -454,6 +455,8 @@ struct CostView: View {
         let value=number(s["amount"])
         let plan=s["plan"] as? NSNumber
         let agents=s["agents"] as? [String] ?? []
+        let subscriptions=s["subscriptions"] as? [String:[String:Any]] ?? [:]
+        let detected=agents.compactMap {subscriptions[$0]?["state"] as? String == "detected" ? subscriptions[$0]?["label"] as? String:nil}
         return VStack(alignment:.leading,spacing:20) {
             HStack {
                 Picker(L("月份"),selection:$model.month) {ForEach(s["months"] as? [String] ?? [],id:\.self){LText($0)}}.labelsHidden().frame(width:125).onChange(of:model.month){model.filter()}
@@ -464,7 +467,8 @@ struct CostView: View {
             HStack(spacing:14) {
                 VStack(alignment:.leading,spacing:10) {
                     LText("参考月费").font(.system(size:12)).foregroundStyle(.secondary)
-                    LText(plan.map{money($0.doubleValue)} ?? "待确认").font(.system(size:30,weight:.medium,design:.rounded)).monospacedDigit()
+                    LText(plan.map{money($0.doubleValue)} ?? (detected.isEmpty ? "未识别套餐":detected.joined(separator:" + "))).font(.system(size:plan == nil ? 21:30,weight:.medium,design:.rounded)).monospacedDigit()
+                    if plan == nil && !detected.isEmpty {LText("月费金额未返回").font(.system(size:10)).foregroundStyle(.secondary)}
                     Button(L("查看套餐")){model.tab="设置"}.buttonStyle(.plain).font(.system(size:11)).foregroundStyle(.blue)
                 }.frame(maxWidth:.infinity,alignment:.leading).padding(20).background(Color.primary.opacity(0.04),in:RoundedRectangle(cornerRadius:18))
                 VStack(alignment:.leading,spacing:10) {
@@ -709,6 +713,7 @@ struct CostView: View {
             if noWrite {LText("缓存写入包含在普通输入中，无独立写入费。").foregroundStyle(.secondary).frame(maxWidth:.infinity,alignment:.leading)}
         }.font(.system(size:10))
     }
+    var connectedAgents:[String] {model.snapshot["connected_agents"] as? [String] ?? []}
     var settings:some View {
         ScrollView { VStack(alignment:.leading,spacing:22) {
             HStack {
@@ -732,7 +737,7 @@ struct CostView: View {
             }
             VStack(alignment:.leading,spacing:10) {
                 LText("套餐 · 连接后自动识别").font(.system(size:16,weight:.semibold))
-                ForEach(["Codex","Claude Code"],id:\.self) {provider in
+                ForEach(connectedAgents,id:\.self) {provider in
                     let states=model.snapshot["subscriptions"] as? [String:[String:Any]] ?? [:]
                     let item=states[provider] ?? [:]
                     VStack(alignment:.leading,spacing:5) {
@@ -757,8 +762,8 @@ struct CostView: View {
                 DisclosureGroup(L("特殊价格 / 手动调整（可选）")) {
                     VStack(alignment:.leading,spacing:10) {
                         HStack {
-                            LText("Codex $");TextField(L("自动"),text:$model.codexPlan).frame(width:80)
-                            LText("Claude $");TextField(L("自动"),text:$model.claudePlan).frame(width:80)
+                            if connectedAgents.contains("Codex") {LText("Codex $");TextField(L("自动"),text:$model.codexPlan).frame(width:80)}
+                            if connectedAgents.contains("Claude Code") {LText("Claude $");TextField(L("自动"),text:$model.claudePlan).frame(width:80)}
                             Button(L("保存调整")){model.savePrefs()}
                             Button(L("恢复自动")){model.codexPlan="";model.claudePlan="";model.send("reset-plan-overrides")}
                         }.textFieldStyle(.roundedBorder)
@@ -777,6 +782,7 @@ struct CostView: View {
     }
     var connections: some View {
         ScrollView { VStack(alignment:.leading,spacing:20) {
+            if connectedAgents.contains("Codex") {
             infoCard("Codex · 自动同步",model.historyLabel,"自动跟进此 Mac 保存的用量；文件变化时更新，另每 5 秒补查。不会上传或保存对话正文。")
             HStack {
                 if model.historyActive {Button(L("暂停自动同步")) {model.send("disable-history-sync")}}
@@ -786,14 +792,20 @@ struct CostView: View {
             LText("最近检查：\(model.localTime(model.historySync["last_scan"])) 北京时间")
                 .font(.system(size:10)).foregroundStyle(.secondary)
             if let error=model.historySync["error"] as? String,!error.isEmpty {LText(error).font(.system(size:11)).foregroundStyle(.orange)}
-            Divider()
+            }
+            if connectedAgents.contains("Claude Code") {
             infoCard("Claude Code",number(model.snapshot["received"]) > 0 ? "已收到 API request 事件 · 仅覆盖新会话":"实验支持 · 尚未验证真实会话","仅收集从这里启动的新 CLI 会话。已有会话和历史用量不包含。")
             HStack {
                 Button(L("连接 Claude 新会话…")) {model.connectClaude()}
                 if model.snapshot["receiving"] as? Bool == true {Button(L("断开采集")) {model.send("disconnect")}}
             }
+            }
+            Menu(L("添加连接")) {
+                if !connectedAgents.contains("Codex") {Button("Codex"){model.connectHistory()}}
+                if !connectedAgents.contains("Claude Code") {Button("Claude Code"){model.connectClaude()}}
+            }.disabled(connectedAgents.contains("Codex") && connectedAgents.contains("Claude Code"))
             if let message=model.snapshot["message"] as? String,message != "尚未连接真实来源 · 空账本不代表零消费" {LText(message).font(.system(size:10)).foregroundStyle(.secondary)}
-            DisclosureGroup(L("高级：Codex hook")) {
+            if connectedAgents.contains("Codex") {DisclosureGroup(L("高级：Codex hook")) {
                 VStack(alignment:.leading,spacing:10) {
                     LText("可选接入方式；不会替你安装或信任 hook。桌面真实投递尚未验收，当前本机同步不依赖它。")
                     HStack {
@@ -803,6 +815,7 @@ struct CostView: View {
                     }
                     LText("已收录 \(Int(number(model.snapshot["codex_count"]))) 条 hook · 拒收 \(Int(number(model.snapshot["codex_rejected"]))) 次投递")
                 }.font(.system(size:11)).padding(.top,8)
+            }
             }
             LText("仅覆盖这台 Mac 上已收录的记录。其他设备、未同步的云端记录及缺失用量不在内。自然月不等于订阅账期。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
@@ -929,7 +942,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hosting.autoresizingMask=[]
         if #available(macOS 26.0,*) {
             let glass=NSGlassEffectView(frame:NSRect(origin:.zero,size:panel.frame.size))
-            glass.style = .clear;glass.cornerRadius=model.expanded ? 22:20
+            glass.style = .regular;glass.cornerRadius=model.expanded ? 22:20
             glass.wantsLayer=true;glass.layer?.masksToBounds=true;glass.layer?.cornerRadius=glass.cornerRadius
             hosting.wantsLayer=true;hosting.layer?.backgroundColor=NSColor.clear.cgColor
             glass.contentView=hosting;panel.contentView=glass

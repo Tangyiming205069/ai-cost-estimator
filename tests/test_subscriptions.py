@@ -53,7 +53,7 @@ class Subscriptions(unittest.TestCase):
             self.assertEqual(app.snapshot({'agent':'Codex'})['plan'],20)
             app.close()
             reopened=engine.Engine(d)
-            self.assertIsNone(reopened.snapshot({'agent':'Codex'})['plan']);reopened.close()
+            self.assertEqual(reopened.snapshot({'agent':'Codex'})['plan'],20);reopened.close()
     def test_connection_detects_only_after_explicit_consent(self):
         with tempfile.TemporaryDirectory() as d:
             app=engine.Engine(Path(d)/'app')

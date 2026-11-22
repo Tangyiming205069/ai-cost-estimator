@@ -5,6 +5,15 @@ import engine
 from test_engine import event
 
 class Bill(unittest.TestCase):
+    def test_connected_agents_are_not_the_supported_adapter_catalog(self):
+        with tempfile.TemporaryDirectory() as d:
+            app=engine.Engine(d)
+            self.assertEqual(app.snapshot({})['connected_agents'],[])
+            app.live.add(event(agent='Codex',id='codex-only',model='gpt-6.1-sol'))
+            self.assertEqual(app.snapshot({'month':'2026-12'})['connected_agents'],['Codex'])
+            app.live.add(event(id='used-claude'))
+            self.assertEqual(app.snapshot({})['connected_agents'],['Claude Code','Codex'])
+            app.close()
     def test_plan_comparison_uses_only_recorded_agents(self):
         with tempfile.TemporaryDirectory() as d:
             app=engine.Engine(d)
