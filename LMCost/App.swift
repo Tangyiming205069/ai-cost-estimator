@@ -2,6 +2,8 @@ import Cocoa
 import SwiftUI
 import Carbon
 import CoreServices
+import Charts
+import UniformTypeIdentifiers
 
 // Localize presentation only: protocol keys, event IDs and stored usage are unchanged.
 enum UIStrings {
@@ -42,7 +44,7 @@ let base = Color.clear
 let metricChoices=[("month_cost","本月 API 等价费用"),("today_cost","今日 API 等价费用"),("month_tokens","本月 Token 用量"),("plan_ratio","本月估算 / 参考月费")]
 func usd(_ x:Double)->String {String(format:"$%.4f",x)}
 func money(_ x:Double)->String {
-    if x>0 && x<0.01 {return "<$0.01"}
+    if x>0 && x<0.01 {return "$"+x.formatted(.number.precision(.fractionLength(2...10)).locale(Locale(identifier:"en_US")))}
     return "$"+x.formatted(.number.precision(.fractionLength(2)).grouping(.automatic).locale(Locale(identifier:"en_US")))
 }
 func number(_ x:Any?)->Double {(x as? NSNumber)?.doubleValue ?? 0}
@@ -86,6 +88,11 @@ final class Model: ObservableObject {
     @Published var tab = "概览"
     @Published var agent = "全部"
     @Published var month = ""
+    @Published var periodMode = "month"
+    @Published var rangeStart = ""
+    @Published var rangeEnd = ""
+    @Published var draftStart = Calendar.current.date(from:Calendar.current.dateComponents([.year,.month],from:Date())) ?? Date()
+    @Published var draftEnd = Date()
     @Published var selectedModel = "全部模型"
     @Published var selectedSpeed = "all"
     @Published var error = ""
@@ -97,6 +104,8 @@ final class Model: ObservableObject {
     @Published var metric = "month_cost"
     @Published var loading = false
     @Published var sourceWatcherActive = false
+    @Published var serviceUnavailable = false
+    var stopping=false
     var backend: Process?
     var input: FileHandle?
     var buffer = Data()
@@ -115,6 +124,7 @@ final class Model: ObservableObject {
         return support.appendingPathComponent("AI Cost Estimator",isDirectory:true)
     }()
     func start() {
+        stopping=false
         let p = Process()
         p.executableURL = URL(fileURLWithPath: Bundle.main.object(forInfoDictionaryKey:"AICostPython") as? String ?? "/opt/homebrew/bin/python3")
         p.arguments = [resource.appendingPathComponent("engine.py").path, dataURL.path]
@@ -139,14 +149,24 @@ final class Model: ObservableObject {
                 }
             }
         }
+        p.terminationHandler = { [weak self] _ in
+            DispatchQueue.main.async {
+                guard let self=self,!self.stopping else{return}
+                self.serviceUnavailable=true;self.loading=false
+                self.error="本机服务已停止，请重新打开 AI Cost Estimator。"
+                self.onChange?()
+            }
+        }
         do { try p.run(); backend = p; send() }
-        catch { self.error = "本机 Python 服务未能启动。此版本需要 /opt/homebrew/bin/python3。" }
+        catch { self.serviceUnavailable=true;self.error = "本机 Python 服务未能启动。此版本需要 /opt/homebrew/bin/python3。" }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.send() }
     }
     func receive(_ obj: [String:Any]) {
         if let e = obj["error"] as? String { error = e }
         if let s = obj["snapshot"] as? [String:Any] {
             guard (month.isEmpty || s["month"] as? String == month),
+                  (s["start_date"] as? String ?? "") == (usesCustomRange ? rangeStart:""),
+                  (s["end_date"] as? String ?? "") == (usesCustomRange ? rangeEnd:""),
                   (s["selected_agent"] as? String ?? "全部") == agent,
                   (s["selected_model"] as? String ?? "全部模型") == selectedModel,
                   (s["selected_speed"] as? String ?? "all") == selectedSpeed else { return }
@@ -170,7 +190,9 @@ final class Model: ObservableObject {
         }
     }
     func send(_ action: String = "snapshot", _ extras: [String:Any] = [:]) {
-        var q: [String:Any] = ["action":action,"month":month,"agent":agent,"model":selectedModel,"speed":selectedSpeed]
+        guard !serviceUnavailable else{return}
+        var q: [String:Any] = ["action":action,"month":month,"agent":agent,"model":selectedModel,"speed":selectedSpeed,
+            "start_date":usesCustomRange ? rangeStart:"","end_date":usesCustomRange ? rangeEnd:""]
         q.merge(extras) { _,new in new }
         if let data = try? JSONSerialization.data(withJSONObject:q) {
             do { try input?.write(contentsOf: data + Data([10])) }
@@ -178,13 +200,58 @@ final class Model: ObservableObject {
         }
     }
     func filter() { selectedRow = ""; loading = true; send() }
+    var usesCustomRange:Bool {tab == "用量" && periodMode == "custom"}
+    var reportZone:TimeZone {timezone == "UTC" ? TimeZone(secondsFromGMT:0)!:TimeZone.current}
+    func dayString(_ date:Date)->String {
+        let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX")
+        formatter.timeZone=reportZone;formatter.dateFormat="yyyy-MM-dd";return formatter.string(from:date)
+    }
+    func applyRange() {
+        let start=dayString(draftStart),end=dayString(draftEnd)
+        guard start<=end else {error="开始日期不能晚于结束日期。";return}
+        guard draftEnd.timeIntervalSince(draftStart)<=3660*86400 else {error="时间区间请控制在十年以内。";return}
+        error="";rangeStart=start;rangeEnd=end;resetPeriodFilters()
+    }
+    func beginRange() {
+        if rangeStart.isEmpty {
+            let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX")
+            formatter.timeZone=reportZone;formatter.dateFormat="yyyy-MM-dd"
+            draftStart=formatter.date(from:snapshot["period_start"] as? String ?? "") ?? Date()
+            draftEnd=formatter.date(from:snapshot["period_end"] as? String ?? "") ?? Date()
+        }
+        applyRange()
+    }
+    func resetPeriodFilters() {error="";agent="全部";selectedModel="全部模型";selectedSpeed="all";filter()}
+    func switchMode() {
+        let value=demo ? "live":"demo"
+        month="";periodMode="month";rangeStart="";rangeEnd=""
+        agent="全部";selectedModel="全部模型";selectedSpeed="all";selectedRow="";error="";loading=true
+        send("mode",["value":value])
+    }
+    func exportDaily() {
+        guard !loading else{return}
+        let panel=NSSavePanel();panel.allowedContentTypes=[.commaSeparatedText]
+        panel.nameFieldStringValue="AI-Cost-Estimator-\(snapshot["period_start"] as? String ?? month)-\(snapshot["period_end"] as? String ?? month).csv"
+        guard panel.runModal() == .OK,let url=panel.url else{return}
+        // Aggregates only: no request or conversation identifiers are exported.
+        let columns=["date","timezone","agent_filter","model_filter","tier_filter","requests","unpriced_requests","api_value_usd","cumulative_api_value_usd","known_tokens","input_tokens","cache_read_tokens","cache_write_tokens","output_tokens","incomplete_tokens"]
+        func cell(_ value:String)->String {"\""+value.replacingOccurrences(of:"\"",with:"\"\"")+"\""}
+        let records=(snapshot["daily"] as? [[String:Any]] ?? []).map {r -> String in
+            let fields=[r["date"] as? String ?? "",snapshot["timezone"] as? String ?? "",agent,selectedModel,selectedSpeed,
+                tokenText(r["count"]),tokenText(r["unpriced"]),(r["amount"] as? NSNumber)?.stringValue ?? "",
+                (r["cumulative"] as? NSNumber)?.stringValue ?? "",tokenText(r["tokens"]),tokenText(r["input"]),tokenText(r["read"]),tokenText(r["write"]),tokenText(r["output"]),r["incomplete"] as? Bool == true ? "true":"false"]
+            return fields.map(cell).joined(separator:",")
+        }
+        do {try ("\u{FEFF}"+([columns.joined(separator:",")]+records).joined(separator:"\r\n")+"\r\n").write(to:url,atomically:true,encoding:.utf8)}
+        catch {self.error="导出失败，请选择可写入的位置。"}
+    }
     var demo: Bool { (snapshot["mode"] as? String ?? "live") == "demo" }
     var activity:[[String:Any]] {snapshot["activity"] as? [[String:Any]] ?? []}
     func timeOnly(_ value:Any?)->String {String(localTime(value).suffix(8))}
     var rows: [[String:Any]] { snapshot["rows"] as? [[String:Any]] ?? [] }
     var history: [String:Any] { snapshot["history"] as? [String:Any] ?? [:] }
     var historySync: [String:Any] {snapshot["history_sync"] as? [String:Any] ?? [:]}
-    var historyActive: Bool {historySync["active"] as? Bool == true}
+    var historyActive: Bool {!serviceUnavailable && historySync["active"] as? Bool == true}
     func localTime(_ value:Any?)->String {
         guard let raw=value as? String else{return "尚无"}
         let parser=ISO8601DateFormatter();parser.formatOptions=[.withInternetDateTime,.withFractionalSeconds]
@@ -281,7 +348,7 @@ final class Model: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else{return}
         send("enable-codex",["detect_plan":true])
     }
-    func stop() { try? input?.close(); if backend?.isRunning == true {backend?.terminate()} }
+    func stop() { stopping=true;try? input?.close();if backend?.isRunning == true {backend?.terminate()} }
 }
 
 final class UsageFileWatcher {
@@ -359,8 +426,155 @@ struct MixBar: View {
     }
 }
 
+struct TrendPoint:Identifiable {
+    let id:String
+    let date:Date
+    let value:Double
+    let series:String
+    let segment:String
+}
+struct UsageTrend:View {
+    let days:[[String:Any]]
+    let language:String
+    @State private var metric="amount"
+    @State private var selection:Date?
+    private func date(_ value:Any?)->Date? {
+        guard let raw=value as? String else{return nil}
+        return ISO8601DateFormatter().date(from:raw+"T12:00:00Z")
+    }
+    private var points:[TrendPoint] {
+        var result:[TrendPoint]=[];var segment=0
+        for day in days {
+            guard let d=date(day["date"]) else{continue}
+            let fields=metric == "tokens" ? [("input","输入"),("read","缓存读取"),("write","缓存写入"),("output","输出")]:[(metric,metric == "amount" ? "每日 API 等价值":metric == "cumulative" ? "累计 API 等价值":"模型请求")]
+            for (key,label) in fields {
+                guard let value=day[key] as? NSNumber else{segment+=1;continue}
+                result.append(TrendPoint(id:"\(day["date"] ?? "")-\(key)",date:d,value:value.doubleValue,series:L(label),segment:"\(key)-\(segment)"))
+            }
+        }
+        return result
+    }
+    private func nearestDay(to candidate:Date)->Date? {
+        days.compactMap {date($0["date"])}.min {abs($0.timeIntervalSince(candidate))<abs($1.timeIntervalSince(candidate))}
+    }
+    private var selectedDay:[String:Any]? {
+        guard let selected=selection ?? days.last.flatMap({date($0["date"])}) else{return nil}
+        return days.first {date($0["date"]) == selected}
+    }
+    private var selectedDate:Date? {selectedDay.flatMap {date($0["date"])}}
+    private var dateBounds:ClosedRange<Date>? {
+        let dates=days.compactMap {date($0["date"])}
+        guard let first=dates.first,let last=dates.last,first<=last else{return nil}
+        // DatePicker works with the selected calendar date, not the chart's noon anchor.
+        return first.addingTimeInterval(-43200)...last.addingTimeInterval(43199)
+    }
+    private var pickerDate:Binding<Date> {
+        Binding(get:{selectedDate ?? Date()},set:{value in
+            var calendar=Calendar(identifier:.gregorian);calendar.timeZone=TimeZone(secondsFromGMT:0)!
+            let noon=calendar.date(byAdding:.hour,value:12,to:calendar.startOfDay(for:value)) ?? value
+            selection=nearestDay(to:noon)
+        })
+    }
+    private var metricTitle:String {metric == "tokens" ? "每日 Token":metric == "count" ? "每日请求":metric == "cumulative" ? "累计 API 等价值":"每日 API 等价值"}
+    private func valueText(_ day:[String:Any])->String {
+        let key=metric == "tokens" ? "tokens":metric
+        guard let value=day[key] as? NSNumber else{return "—"}
+        return metric == "amount" || metric == "cumulative" ? usd(value.doubleValue):compactNumber(value.doubleValue)
+    }
+    var body:some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack {
+                LText("每日趋势").font(.system(size:12,weight:.semibold))
+                Spacer()
+                if let bounds=dateBounds {
+                    DatePicker(L("选择日期"),selection:pickerDate,in:bounds,displayedComponents:.date)
+                        .labelsHidden().controlSize(.small)
+                        .accessibilityLabel(L("选择趋势日期"))
+                        .environment(\.timeZone,TimeZone(secondsFromGMT:0)!)
+                        .environment(\.locale,Locale(identifier:language == "en" ? "en_US":"zh_CN"))
+                }
+                Picker(L("图表指标"),selection:$metric) {
+                    LText("费用").tag("amount");Text("Token").tag("tokens")
+                    LText("请求").tag("count");LText("累计费用").tag("cumulative")
+                }.labelsHidden().pickerStyle(.segmented).frame(width:290).controlSize(.small)
+            }
+            HStack(alignment:.firstTextBaseline) {
+                LText(metricTitle).foregroundStyle(.secondary)
+                Spacer()
+                if let day=selectedDay {
+                    Text(day["date"] as? String ?? "").foregroundStyle(.secondary)
+                    Text(valueText(day)).fontWeight(.medium).monospacedDigit()
+                    if number(day["unpriced"])>0 {LText("含未定价").foregroundStyle(.orange)}
+                }
+            }.font(.system(size:10))
+            if days.isEmpty {
+                LText("所选区间尚无已收录的用量").foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:150)
+            } else {
+                Chart {
+                    ForEach(points) {point in
+                        LineMark(x:.value(L("日期"),point.date),y:.value(L(metricTitle),point.value),series:.value("Segment",point.segment))
+                            .foregroundStyle(by:.value(L("用量"),point.series))
+                            .lineStyle(StrokeStyle(lineWidth:2)).interpolationMethod(.linear)
+                        if days.count==1 || point.date == selectedDate {
+                            PointMark(x:.value(L("日期"),point.date),y:.value(L(metricTitle),point.value))
+                                .foregroundStyle(by:.value(L("用量"),point.series))
+                                .symbolSize(35)
+                        }
+                    }
+                    if let selectedDate=selectedDate {
+                        RuleMark(x:.value(L("日期"),selectedDate)).foregroundStyle(Color.secondary.opacity(0.4)).lineStyle(StrokeStyle(dash:[3,3]))
+                    }
+                }
+                .chartForegroundStyleScale(range:[Color.teal,Color.blue,Color.orange,Color.purple])
+                .chartYScale(domain:.automatic(includesZero:true))
+                .chartXScale(range:.plotDimension(padding:16))
+                .chartXAxis {AxisMarks(values:.automatic(desiredCount:5)) {value in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                    AxisValueLabel {if let d=value.as(Date.self) {
+                        Text(d.formatted(.dateTime.month(.twoDigits).day(.twoDigits))).font(.system(size:9)).fixedSize()
+                    }}
+                }}
+                .chartYAxis {AxisMarks(position:.leading,values:.automatic(desiredCount:4)) {value in
+                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
+                    AxisValueLabel {if let n=value.as(Double.self) {
+                        Text((metric == "amount" || metric == "cumulative") ? (n>0 && n<1 ? String(format:"$%.2g",n):"$"+compactNumber(n)):compactNumber(n))
+                    }}
+                }}
+                .chartLegend(position:.bottom,alignment:.leading,spacing:8)
+                .chartOverlay {proxy in
+                    GeometryReader {geometry in
+                        Rectangle().fill(Color.clear).contentShape(Rectangle()).onContinuousHover {phase in
+                            switch phase {
+                            case .active(let location):
+                                if let anchor=proxy.plotFrame {
+                                    let frame=geometry[anchor]
+                                    if location.x >= frame.minX && location.x <= frame.maxX,
+                                       let value=proxy.value(atX:location.x-frame.minX,as:Date.self) {selection=nearestDay(to:value)}
+                                }
+                            case .ended:break
+                            }
+                        }
+                        .gesture(SpatialTapGesture().onEnded {event in
+                            if let anchor=proxy.plotFrame {
+                                let frame=geometry[anchor]
+                                if event.location.x >= frame.minX && event.location.x <= frame.maxX,
+                                   let value=proxy.value(atX:event.location.x-frame.minX,as:Date.self) {selection=nearestDay(to:value)}
+                            }
+                        })
+                    }
+                }
+                .environment(\.timeZone,TimeZone(secondsFromGMT:0)!)
+                .frame(height:165)
+                .onChange(of:days.compactMap {$0["date"] as? String}){selection=nil}
+            }
+            LText("按账本时区汇总 · 金额仅含已定价请求 · 移动鼠标或选择日期查看每日数值").font(.system(size:9)).foregroundStyle(.secondary)
+        }.padding(14).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:14))
+    }
+}
+
 struct CostView: View {
     @ObservedObject var model: Model
+    @State private var activityView = "conversation"
     var expand: () -> Void
     var hide: () -> Void
     @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -370,12 +584,21 @@ struct CostView: View {
             if model.expanded {
                 VStack(spacing:0) {
                     HStack(spacing:10) {
-                        LText("AI Cost Estimator").font(.system(size:14,weight:.semibold))
-                        Spacer()
+                        HStack {
+                            LText("AI Cost Estimator").font(.system(size:14,weight:.semibold))
+                            Spacer(minLength:0)
+                        }.contentShape(Rectangle()).gesture(DragGesture(minimumDistance:4)
+                            .onChanged {model.onDrag?($0.translation,false)}
+                            .onEnded {model.onDrag?($0.translation,true)})
+                            .localizedHelp("拖动标题可移动窗口")
                         HStack(spacing:5) {
                             Circle().fill(statusColor).frame(width:5,height:5)
                             LText(model.demo ? "演示":(model.snapshot.isEmpty ? "载入中":(model.historyActive ? "正在跟进":"已暂停")))
                         }.font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
+                        Picker("Language / 语言",selection:Binding(get:{model.language},set:{model.setLanguage($0)})) {
+                            Text("中").tag("zh-Hans");Text("EN").tag("en")
+                        }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:70)
+                            .accessibilityLabel("Language / 语言")
                         Menu {
                             Menu("Language / 语言") {
                                 Button("English") {model.setLanguage("en")}
@@ -388,10 +611,7 @@ struct CostView: View {
                             else {Button(L("连接自动同步…")) {model.connectHistory()}}
                             Button(L("补录到现在")) {model.send("sync-history-once",["consent":true])}
                             Divider()
-                            Button(L(model.demo ? "返回真实账本":"试用虚构演示")) {
-                                model.month="";model.selectedModel="全部模型";model.selectedSpeed="all"
-                                model.send("mode",["value":model.demo ? "live":"demo"])
-                            }
+                            Button(L(model.demo ? "返回真实账本":"试用虚构演示")) {model.switchMode()}
                         } label:{Image(systemName:"ellipsis").frame(width:22,height:22)}
                         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().localizedAccessibilityLabel("更多选项")
                         Button(action:hide) {Image(systemName:"minus").frame(width:22,height:22)}.localizedHelp("隐藏 · ⌃⌥L 唤回").localizedAccessibilityLabel("隐藏浮窗")
@@ -403,7 +623,10 @@ struct CostView: View {
                             LText("概览").tag("概览");LText("明细").tag("用量");LText("最近用量").tag("活动");LText("连接").tag("连接")
                             if model.tab == "价格" {LText("定价").tag("价格")}
                             if model.tab == "设置" {LText("设置").tag("设置")}
-                        }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:model.tab == "价格" || model.tab == "设置" ? 420:340).onChange(of:model.tab) {if model.tab == "概览" {model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all";model.filter()}}
+                        }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:model.tab == "价格" || model.tab == "设置" ? 420:340).onChange(of:model.tab) {
+                            if model.tab == "概览" || model.tab == "活动" {model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all"}
+                            model.filter()
+                        }
                         Spacer()
                     }.padding(.horizontal,22).padding(.bottom,14)
                     Divider().opacity(0.5)
@@ -491,16 +714,10 @@ struct CostView: View {
             }
             Divider().opacity(0.35)
             HStack(alignment:.top,spacing:24) {
-                VStack(alignment:.leading,spacing:7) {
-                    LText("剩余额度").font(.system(size:11)).foregroundStyle(.secondary)
-                    LText("尚未接入").font(.system(size:17,weight:.medium))
-                }.frame(maxWidth:.infinity,alignment:.leading)
-                VStack(alignment:.leading,spacing:7) {
-                    LText("本月额度重置").font(.system(size:11)).foregroundStyle(.secondary)
-                    LText("暂无可靠记录").font(.system(size:17,weight:.medium))
-                }.frame(maxWidth:.infinity,alignment:.leading)
+                summaryItem("本月 Token",mixBrief(s["mix"]))
+                summaryItem("模型请求",tokenText(s["count"]))
+                summaryItem("有记录的天数",tokenText(s["active_days"]))
             }
-            LText("当前记录的是用量；无法据此判断额度还剩多少，或重置过几次。").font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
                 Button(L("查看模型与费用明细")){model.tab="用量"}.buttonStyle(.borderedProminent).tint(.teal)
                 Spacer()
@@ -510,62 +727,119 @@ struct CostView: View {
             if number(s["unpriced"])>0 {LText("仍有未定价记录，金额仅包含可定价部分。").font(.system(size:10)).foregroundStyle(.secondary)}
         }
     }
-    var usage:some View {
-        let agents=model.snapshot["agents"] as? [String] ?? []
-        return VStack(alignment:.leading,spacing:16) {
-            HStack(spacing:12) {
-                Picker(L("月份"),selection:$model.month) {ForEach(model.snapshot["months"] as? [String] ?? [],id:\.self){LText($0)}}
-                    .labelsHidden().frame(width:128).onChange(of:model.month){model.agent="全部";model.selectedModel="全部模型";model.filter()}
+    func summaryItem(_ label:String,_ value:String)->some View {
+        VStack(alignment:.leading,spacing:7) {
+            LText(label).font(.system(size:11)).foregroundStyle(.secondary)
+            LText(value).font(.system(size:19,weight:.medium,design:.rounded)).monospacedDigit()
+        }.frame(maxWidth:.infinity,alignment:.leading)
+    }
+    var periodControls:some View {
+        VStack(alignment:.leading,spacing:10) {
+            HStack(spacing:10) {
+                Spacer(minLength:0)
+                Picker(L("时间范围"),selection:$model.periodMode) {
+                    LText("按月").tag("month");LText("自定义").tag("custom")
+                }.labelsHidden().pickerStyle(.segmented).frame(width:154).onChange(of:model.periodMode) {
+                    if model.periodMode == "custom" {model.beginRange()} else {model.resetPeriodFilters()}
+                }
+                if model.periodMode == "month" {
+                    Picker(L("月份"),selection:$model.month) {ForEach(model.snapshot["months"] as? [String] ?? [],id:\.self){LText($0)}}
+                        .labelsHidden().frame(width:125).onChange(of:model.month){model.resetPeriodFilters()}
+                }
+                Button {model.exportDaily()} label:{Label(L("导出 CSV"),systemImage:"square.and.arrow.up")}
+                    .disabled(model.loading || (model.snapshot["daily"] as? [[String:Any]] ?? []).isEmpty)
+                Spacer(minLength:0)
+            }
+            if model.periodMode == "custom" {
+                HStack(spacing:8) {
+                    Spacer(minLength:0)
+                    DatePicker(L("从"),selection:$model.draftStart,displayedComponents:.date).frame(width:202)
+                    DatePicker(L("至"),selection:$model.draftEnd,displayedComponents:.date).frame(width:202)
+                    Button(L("应用")){model.applyRange()}.buttonStyle(.borderedProminent).tint(.teal)
+                    Spacer(minLength:0)
+                }.environment(\.timeZone,model.reportZone)
+                    .environment(\.locale,Locale(identifier:model.language == "en" ? "en_US":"zh_CN"))
+            }
+            HStack(spacing:8) {
+                Spacer(minLength:0)
+                let agents=model.snapshot["agents"] as? [String] ?? []
                 if agents.count>1 {
                     Picker(L("Agent"),selection:$model.agent) {
-                        LText("全部 Agent").tag("全部")
-                        ForEach(agents,id:\.self){LText($0).tag($0)}
-                    }.labelsHidden().frame(width:136).onChange(of:model.agent){model.selectedModel="全部模型";model.filter()}
-                } else {
-                    LText(agents.first ?? "暂无来源").foregroundStyle(.secondary).padding(.horizontal,10).padding(.vertical,4).background(Color.primary.opacity(0.05),in:Capsule())
-                }
-                Spacer()
-                LText("USD · \(model.snapshot["timezone"] as? String ?? "UTC") 自然月").font(.system(size:10)).foregroundStyle(.secondary)
-            }.controlSize(.small).font(.system(size:11))
-            HStack(alignment:.bottom) {
-                VStack(alignment:.leading,spacing:6) {
-                    LText("按 API 官方价格折算").font(.system(size:11)).foregroundStyle(.secondary)
-                    LText(model.loading ? "汇总中…":(number(model.snapshot["count"]) > number(model.snapshot["unpriced"]) ? money(number(model.snapshot["amount"])):"—"))
-                        .font(.system(size:34,weight:.medium,design:.rounded)).monospacedDigit()
-                }
-                Spacer()
-                VStack(alignment:.trailing,spacing:6) {
-                    LText(mixBrief(model.snapshot["mix"])+" tokens").font(.system(size:15,weight:.medium,design:.rounded))
-                    LText("\(Int(number(model.snapshot["count"]))) 次模型请求").font(.system(size:10)).foregroundStyle(.secondary)
-                }.padding(.bottom,4)
-            }
-            HStack(spacing:5) {
-                Image(systemName:"info.circle").font(.system(size:10))
-                LText(number(model.snapshot["unpriced"]) > 0 ? "\(Int(number(model.snapshot["unpriced"]))) 次暂未定价 · 当前金额仅含已定价部分":"当前已收录请求均可估算")
-                Spacer()
-                Button(L("计算口径")) {model.tab="价格"}.buttonStyle(.plain).foregroundStyle(.secondary)
-            }.font(.system(size:10)).foregroundStyle(.secondary)
-                .localizedHelp("按历史配置模型、档位及当前官网价格估算。不是实际扣款，历史覆盖可能不完整。")
-            if number(model.snapshot["standard_fallback"])>0 {
-                LText("\(Int(number(model.snapshot["standard_fallback"]))) 次 Fast 按普通价参考").font(.system(size:10)).foregroundStyle(.secondary)
-            }
-            MixBar(mix:model.snapshot["mix"] as? [String:Any] ?? [:]).id(model.language).padding(.vertical,3)
-            Divider().opacity(0.4)
-            HStack {
-                LText("模型明细").font(.system(size:12,weight:.semibold))
-                Spacer()
-                speedPicker
+                        LText("全部 Agent").tag("全部");ForEach(agents,id:\.self){LText($0).tag($0)}
+                    }.labelsHidden().frame(width:116).onChange(of:model.agent){model.selectedModel="全部模型";model.filter()}
+                } else {LText(agents.first ?? "暂无来源").foregroundStyle(.secondary)}
                 Picker(L("模型"),selection:$model.selectedModel) {
                     LText("全部模型").tag("全部模型")
                     ForEach(model.snapshot["models"] as? [String] ?? [],id:\.self){LText($0)}
-                }.labelsHidden().frame(width:190).controlSize(.small).font(.system(size:10)).onChange(of:model.selectedModel){model.filter()}
+                }.labelsHidden().frame(width:185).onChange(of:model.selectedModel){model.filter()}
+                speedPicker
+                LText("USD · \(model.snapshot["timezone"] as? String ?? "UTC")").font(.system(size:9)).foregroundStyle(.secondary)
+                Spacer(minLength:0)
             }
+        }.frame(maxWidth:.infinity).controlSize(.small).font(.system(size:11))
+    }
+    var usage:some View {
+        VStack(alignment:.leading,spacing:12) {
+            periodControls
             ScrollView {
-                VStack(spacing:0) {
-                    if model.rows.isEmpty {LText("这个月尚无已收录的用量").font(.system(size:12)).foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:120)}
-                    ForEach(Array(model.rows.enumerated()),id:\.offset) {_,row in modelRow(row)}
-                }.frame(width:596,alignment:.leading)
-            }.frame(minHeight:0,maxHeight:.infinity)
+                VStack(alignment:.leading,spacing:16) {
+                    HStack(alignment:.bottom) {
+                        VStack(alignment:.leading,spacing:6) {
+                            LText("区间 API 等价值").font(.system(size:11)).foregroundStyle(.secondary)
+                            LText(model.loading ? "汇总中…":(number(model.snapshot["count"]) > number(model.snapshot["unpriced"]) ? money(number(model.snapshot["amount"])):"—"))
+                                .font(.system(size:32,weight:.medium,design:.rounded)).monospacedDigit()
+                        }
+                        Spacer()
+                        VStack(alignment:.trailing,spacing:6) {
+                            LText(mixBrief(model.snapshot["mix"])+" tokens").font(.system(size:15,weight:.medium,design:.rounded))
+                            LText("\(Int(number(model.snapshot["count"]))) 次模型请求").font(.system(size:10)).foregroundStyle(.secondary)
+                        }.padding(.bottom,4)
+                    }
+                    UsageTrend(days:model.snapshot["daily"] as? [[String:Any]] ?? [],language:model.language).id(model.language)
+                    HStack(spacing:5) {
+                        Image(systemName:"info.circle").font(.system(size:10))
+                        LText(number(model.snapshot["unpriced"]) > 0 ? "\(Int(number(model.snapshot["unpriced"]))) 次暂未定价 · 当前金额仅含已定价部分":"当前已收录请求均可估算")
+                        Spacer()
+                        Button(L("计算口径")) {model.tab="价格"}.buttonStyle(.plain)
+                    }.font(.system(size:10)).foregroundStyle(.secondary)
+                    if number(model.snapshot["standard_fallback"])>0 {
+                        LText("\(Int(number(model.snapshot["standard_fallback"]))) 次 Fast 按普通价参考").font(.system(size:10)).foregroundStyle(.secondary)
+                    }
+                    MixBar(mix:model.snapshot["mix"] as? [String:Any] ?? [:]).id(model.language)
+                    Divider().opacity(0.4)
+                    LText("模型明细").font(.system(size:12,weight:.semibold))
+                    VStack(spacing:0) {
+                        if model.rows.isEmpty {LText("所选区间尚无已收录的用量").font(.system(size:12)).foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:60)}
+                        ForEach(Array(model.rows.enumerated()),id:\.offset) {_,row in modelRow(row)}
+                    }
+                    dailyTable
+                }.frame(width:596,alignment:.leading).padding(.bottom,10)
+            }.opacity(model.loading ? 0.55:1)
+        }
+    }
+    var dailyTable:some View {
+        let days=model.snapshot["daily"] as? [[String:Any]] ?? []
+        return LazyVStack(alignment:.leading,spacing:10) {
+            Divider().opacity(0.4)
+            LText("逐日明细").font(.system(size:12,weight:.semibold))
+            HStack {
+                LText("日期").frame(width:94,alignment:.leading)
+                LText("API 等价值").frame(width:106,alignment:.trailing)
+                LText("Token").frame(width:100,alignment:.trailing)
+                LText("请求").frame(width:70,alignment:.trailing)
+                Spacer();LText("未定价").frame(width:75,alignment:.trailing)
+            }.font(.system(size:10)).foregroundStyle(.secondary)
+            ForEach(Array(days.reversed().enumerated()),id:\.offset) {_,day in
+                HStack {
+                    Text(day["date"] as? String ?? "").frame(width:94,alignment:.leading)
+                    Text((day["amount"] as? NSNumber).map{usd($0.doubleValue)} ?? "—").frame(width:106,alignment:.trailing)
+                    Text(tokenBrief(day["tokens"])).frame(width:100,alignment:.trailing)
+                    Text(tokenText(day["count"])).frame(width:70,alignment:.trailing)
+                    Spacer();Text(tokenText(day["unpriced"])).frame(width:75,alignment:.trailing)
+                }.font(.system(size:11)).monospacedDigit().padding(.vertical,5)
+                Divider().opacity(0.15)
+            }
+            LText("空白日期表示未收录请求；不代表没有使用。Token 仅含已知数量。").font(.system(size:10)).foregroundStyle(.secondary)
         }
     }
     var speedPicker:some View {
@@ -641,20 +915,53 @@ struct CostView: View {
         VStack(alignment:.leading,spacing:14) {
             HStack {
                 VStack(alignment:.leading,spacing:5) {
-                    LText("每一次模型请求").font(.system(size:22,weight:.semibold,design:.rounded))
-                    LText("此 Mac 的全部已落盘对话 · 最新 40 条").font(.system(size:11)).foregroundStyle(.secondary)
+                    LText("最近用量").font(.system(size:22,weight:.semibold,design:.rounded))
+                    LText(activityView == "conversation" ? "所选月份 · 所选档位 · 此 Mac 已收录用量":"此 Mac 的全部已落盘对话 · 最新 40 条").font(.system(size:11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 VStack(alignment:.trailing,spacing:8) {
                     HStack(spacing:5) {Circle().fill(statusColor).frame(width:5,height:5);LText(model.historyActive ? "正在跟进":"已暂停")}
                         .font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
-                    speedPicker
                 }
             }
+            HStack {
+                Picker(L("用量视图"),selection:$activityView) {
+                    LText("按对话").tag("conversation");LText("逐条请求").tag("requests")
+                }.labelsHidden().pickerStyle(.segmented).frame(width:160)
+                Spacer()
+                if activityView == "conversation" {
+                    Picker(L("月份"),selection:$model.month) {
+                        ForEach(model.snapshot["months"] as? [String] ?? [],id:\.self){LText($0)}
+                    }.labelsHidden().frame(width:125).onChange(of:model.month){model.resetPeriodFilters()}
+                }
+                speedPicker
+            }.controlSize(.small)
             LText("请求用量写入本机后自动更新；未定价请求也会显示 token。").font(.system(size:10)).foregroundStyle(.secondary)
+            if !model.demo {
+                let info=model.snapshot["conversation_titles"] as? [String:Any] ?? [:]
+                HStack {
+                    if info["enabled"] as? Bool == true {
+                        LText(info["state"] as? String == "loading" ? "正在读取对话标题…":info["state"] as? String == "unavailable" ? "标题暂时无法刷新，稍后可重试。":"对话标题仅在本机显示，不写入用量账本。")
+                        Spacer()
+                        Button(L("刷新标题")){model.send("refresh-conversation-titles")}
+                            .disabled(info["state"] as? String == "loading" || model.serviceUnavailable)
+                    } else {
+                        Button(L("显示本机对话标题")){model.send("set-conversation-titles",["enabled":true,"consent":true])}
+                        Spacer()
+                        LText("可在设置中关闭")
+                    }
+                }.font(.system(size:10)).foregroundStyle(.secondary)
+            }
             Divider().opacity(0.35)
             ScrollView {
-                VStack(spacing:0) {
+                LazyVStack(spacing:0) {
+                    if activityView == "conversation" {
+                        let conversations=model.snapshot["conversations"] as? [[String:Any]] ?? []
+                        if conversations.isEmpty {
+                            LText("所选月份暂无已收录对话用量").foregroundStyle(.secondary).font(.system(size:11)).frame(maxWidth:.infinity,minHeight:80)
+                        }
+                        ForEach(Array(conversations.enumerated()),id:\.offset) {index,row in conversationRow(row,index:index)}
+                    } else {
                     ForEach(Array(model.activity.enumerated()),id:\.offset) {index,e in
                         HStack(alignment:.top,spacing:12) {
                             VStack(spacing:6) {
@@ -676,7 +983,7 @@ struct CostView: View {
                                     LText("缓存写 \(tokenBrief(e["write"]))")
                                 }.font(.system(size:10)).foregroundStyle(.secondary)
                                 HStack {
-                                    LText((e["agent"] as? String ?? "")+" · "+((e["conversation"] as? String).map{"会话 "+String($0.prefix(8))} ?? "历史请求"))
+                                    Text((e["agent"] as? String ?? "")+" · "+conversationTitle(e)).lineLimit(1).help(conversationTitle(e))
                                     Spacer()
                                     LText(e["amount"] is NSNumber ? usd(number(e["amount"])):"未定价").monospacedDigit()
                                 }.font(.system(size:9)).foregroundStyle(.secondary)
@@ -684,9 +991,42 @@ struct CostView: View {
                         }.padding(.vertical,9).accessibilityElement(children:.combine)
                         .localizedHelp("\(model.localTime(e["timestamp"])) 北京时间\n普通输入 \(tokenText(e["input"])) · 输出 \(tokenText(e["output"])) · 缓存读 \(tokenText(e["read"])) · 缓存写 \(tokenText(e["write"]))\n\(e["reason"] as? String ?? "")")
                     }
+                    }
                 }
-            }
+            }.id("\(activityView)-\(model.language)")
         }
+    }
+    func conversationTitle(_ row:[String:Any])->String {
+        if let title=row["title"] as? String,!title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {return title}
+        if let key=row["conversation"] as? String {return L("标题暂不可用")+" · "+String(key.prefix(6))}
+        return L("未关联用量")
+    }
+    func conversationRow(_ row:[String:Any],index:Int)->some View {
+        let mix=row["mix"] as? [String:Any] ?? [:]
+        let values=mix["values"] as? [String:Any] ?? [:]
+        let names=(row["models"] as? [String] ?? []).joined(separator:", ")
+        return VStack(alignment:.leading,spacing:7) {
+            HStack(alignment:.firstTextBaseline) {
+                Text(conversationTitle(row)).font(.system(size:12,weight:.medium)).lineLimit(2).help(conversationTitle(row))
+                Spacer(minLength:10)
+                LText(mixBrief(mix)+" tokens").font(.system(size:12,weight:.medium,design:.rounded)).monospacedDigit()
+            }
+            HStack(spacing:7) {
+                LText("输入 \(tokenBrief(values["input"]))")
+                LText("输出 \(tokenBrief(values["output"]))")
+                LText("缓存读 \(tokenBrief(values["read"]))")
+                LText("缓存写 \(tokenBrief(values["write"]))")
+                if mix["incomplete"] as? Bool == true {LText("Token 不完整").foregroundStyle(.orange)}
+            }.font(.system(size:10)).foregroundStyle(.secondary)
+            HStack {
+                LText((row["agent"] as? String ?? "")+" · \(Int(number(row["count"]))) 次请求")
+                if !names.isEmpty {Text(names).lineLimit(1)}
+                Spacer()
+                LText(number(row["count"]) > number(row["unpriced"]) ? ((number(row["unpriced"]) > 0 ? L("已定价部分")+" ":"")+usd(number(row["amount"]))):"未定价").monospacedDigit()
+                if number(row["unpriced"]) > 0 {LText("\(Int(number(row["unpriced"]))) 次未定价").foregroundStyle(.orange)}
+            }.font(.system(size:9)).foregroundStyle(.secondary)
+            Divider().opacity(0.25)
+        }.padding(.vertical,8).frame(maxWidth:.infinity,alignment:.leading)
     }
     func bucketTable(_ row:[String:Any]) -> some View {
         let buckets=row["buckets"] as? [String:Any] ?? [:]
@@ -724,6 +1064,14 @@ struct CostView: View {
                 }.labelsHidden().pickerStyle(.segmented).frame(width:180)
             }
             Divider().padding(.vertical,6)
+
+            if connectedAgents.contains("Codex") {
+                Toggle(L("显示本机 Codex 对话标题"),isOn:Binding(
+                    get:{(model.snapshot["conversation_titles"] as? [String:Any])?["enabled"] as? Bool == true},
+                    set:{model.send("set-conversation-titles",["enabled":$0,"consent":$0])}))
+                    .toggleStyle(.switch).font(.system(size:12)).disabled(model.demo || model.serviceUnavailable)
+                LText("标题只在本机显示，不写入用量账本，也不会上传。").font(.system(size:10)).foregroundStyle(.secondary)
+            }
 
             VStack(alignment:.leading,spacing:12) {
                 LText("小浮窗显示什么").font(.system(size:16,weight:.semibold))
@@ -852,7 +1200,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var status: NSStatusItem!
     var hotKey: EventHotKeyRef?
     var uiTest = CommandLine.arguments.contains("--ui-test")
-    var savedFrame: NSRect?
+    var placement=WindowPlacement()
+    var changingFrame=false
     var dragOrigin: NSPoint?
     var dragMouseOrigin: NSPoint?
     var hosting:NSHostingView<CostView>!
@@ -872,7 +1221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         panel.appearance=nil
         panel.delegate=self
         model.onDrag = { [weak self] delta,ended in
-            guard let self=self,!self.model.expanded else{return}
+            guard let self=self else{return}
             // Read pointer position only while the user is dragging this view.
             // Screen coordinates avoid feedback when the moving window changes local coordinates.
             let mouse=NSEvent.mouseLocation
@@ -883,7 +1232,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let origin=self.dragOrigin,let start=self.dragMouseOrigin {
                 self.panel.setFrameOrigin(NSPoint(x:origin.x+mouse.x-start.x,y:origin.y+mouse.y-start.y))
             }
-            if ended {self.dragOrigin=nil;self.dragMouseOrigin=nil;self.clamp()}
+            if ended {
+                self.dragOrigin=nil;self.dragMouseOrigin=nil;self.clamp()
+                if self.model.expanded {self.placement.movedExpanded(to:self.panel.frame,screens:self.screens);self.savePosition()}
+            }
         }
         hosting=NSHostingView(rootView:CostView(model:model,expand:{[weak self] in self?.toggleExpanded()},hide:{[weak self] in self?.hide()}))
         hosting.sizingOptions=[]
@@ -953,36 +1305,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func restorePosition() {
         let path=model.dataURL.appendingPathComponent("window.json")
-        if let data=try? Data(contentsOf:path),let d=try? JSONSerialization.jsonObject(with:data) as? [String:Double],let x=d["x"],let y=d["y"] {
-            panel.setFrameOrigin(NSPoint(x:x,y:y))
+        if let data=try? Data(contentsOf:path),let d=try? JSONSerialization.jsonObject(with:data) as? [String:Double],let x=d["x"],let y=d["y"],x.isFinite,y.isFinite {
+            setPanelFrame(NSRect(origin:NSPoint(x:x,y:y),size:panel.frame.size))
         } else if let screen=NSScreen.main?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(x:screen.maxX-380,y:screen.maxY-180))
+            setPanelFrame(NSRect(origin:NSPoint(x:screen.maxX-380,y:screen.maxY-180),size:panel.frame.size))
         }
         clamp()
     }
+    var screens:[NSRect] {NSScreen.screens.map(\.visibleFrame)}
+    func setPanelFrame(_ frame:NSRect) {
+        let previous=changingFrame;changingFrame=true
+        panel.setFrame(frame,display:true,animate:false)
+        changingFrame=previous
+    }
     func clamp() {
-        guard let screen=NSScreen.screens.first(where:{$0.visibleFrame.intersects(panel.frame)}) ?? NSScreen.main else{return}
-        let s=screen.visibleFrame, f=panel.frame
-        panel.setFrameOrigin(NSPoint(x:max(s.minX,min(f.minX,s.maxX-f.width)),y:max(s.minY,min(f.minY,s.maxY-f.height))))
+        setPanelFrame(WindowPlacement.clamped(panel.frame,to:screens))
+        savePosition()
     }
     func windowDidMove(_ n:Notification) {
+        guard let panel=panel,!changingFrame else{return}
+        if model.expanded {placement.movedExpanded(to:panel.frame,screens:screens)}
+        savePosition()
+    }
+    func savePosition() {
         guard let panel=panel else{return}
-        let origin=model.expanded ? (savedFrame?.origin ?? panel.frame.origin):panel.frame.origin
+        let origin=placement.savedOrigin(for:panel.frame,expanded:model.expanded)
         let values=["x":origin.x,"y":origin.y]
         try? FileManager.default.createDirectory(at:model.dataURL,withIntermediateDirectories:true)
         if let d=try? JSONSerialization.data(withJSONObject:values) {try? d.write(to:model.dataURL.appendingPathComponent("window.json"),options:.atomic)}
     }
     func toggleExpanded() {
-        if !model.expanded {savedFrame=panel.frame;model.tab="概览";model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all";model.filter()}
-        let top=panel.frame.maxY
+        let frame:NSRect
+        if model.expanded {frame=placement.collapse(from:panel.frame,screens:screens)}
+        else {
+            frame=placement.expand(from:panel.frame,screens:screens)
+            model.tab="概览";model.agent="全部";model.selectedModel="全部模型";model.selectedSpeed="all";model.filter()
+        }
+        changingFrame=true
         model.expanded.toggle()
         panel.allowsKeyboard=model.expanded
-        panel.isMovableByWindowBackground=model.expanded
-        let size=model.expanded ? NSSize(width:640,height:610) : NSSize(width:188,height:40)
-        panel.setFrame(NSRect(x:panel.frame.minX,y:top-size.height,width:size.width,height:size.height),display:true,animate:false)
-        if !model.expanded,let old=savedFrame {panel.setFrameOrigin(old.origin)}
-        clamp()
+        panel.isMovableByWindowBackground=false
+        setPanelFrame(frame)
         updateSurface()
+        changingFrame=false
+        savePosition()
         if !model.expanded {panel.resignKey()}
     }
     func hide() {panel.orderOut(nil);if uiTest {record("manual-hide",!panel.isVisible)}}
@@ -1001,7 +1367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func reveal(){NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])}
     @objc func quit(){NSApp.terminate(nil)}
     func applicationShouldHandleReopen(_ sender:NSApplication,hasVisibleWindows flag:Bool)->Bool {panel.orderFrontRegardless();return true}
-    func applicationWillTerminate(_ n:Notification){sourceWatcher.stop();model.stop()}
+    func applicationWillTerminate(_ n:Notification){savePosition();sourceWatcher.stop();model.stop()}
     func scheduleUITest() {
         // Drives the exact production actions on the live NSPanel; never connects a vendor.
         let actions:[(Double,()->Void)] = [
@@ -1038,7 +1404,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 }
 
-let app=NSApplication.shared
-let delegate=AppDelegate()
-app.delegate=delegate
-app.run()
+@main
+struct LMCostApplication {
+    static func main() {
+        let app=NSApplication.shared
+        let delegate=AppDelegate()
+        app.delegate=delegate
+        withExtendedLifetime(delegate) {app.run()}
+    }
+}

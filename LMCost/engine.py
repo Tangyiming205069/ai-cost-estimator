@@ -1,6 +1,7 @@
 """AI Cost Estimator local-only ledger. History requires a separate explicit import."""
 from __future__ import annotations
 import datetime as dt
+import calendar
 from decimal import Decimal
 import hashlib
 import http.server
@@ -16,11 +17,14 @@ import sys
 import threading
 import time
 import subscriptions
+from conversation_titles import TitleResolver,conversation_key
 
 ROOT = Path(__file__).resolve().parent
 CATALOG = json.loads((ROOT / 'pricing.json').read_text())
 BUCKETS = ('input', 'read', 'write_short', 'write_long', 'output')
 MAX_TOKEN = 2**53 - 1
+DEMO_NAMES=['Build a project dashboard','Refactor account settings','Review a pull request']
+DEMO_TITLES={conversation_key(f'demo-{agent}-{i}'):name for agent in ('Codex','Claude Code') for i,name in enumerate(DEMO_NAMES)}
 
 def integer(v):
     if isinstance(v, str) and re.fullmatch(r'[0-9]{1,16}', v):
@@ -139,6 +143,52 @@ def speed_breakdown(events, priced=None):
                  unpriced=sum(n is None for n in groups[speed]['prices']),
                  standard_fallback=sum(standard_fallback(e) and n is not None for e,n in zip(groups[speed]['events'],groups[speed]['prices'])))
             for speed in ('normal','fast','flex','ultrafast','unknown') if speed in groups]
+
+def conversation_usage(events):
+    """Group only records with an existing local conversation hash.
+
+    Untagged records are grouped separately per source and never attributed to a
+    named conversation. Titles are unavailable without a safe metadata source.
+    """
+    groups={}
+    for e in events:
+        conversation=e.get('conversation')
+        if not isinstance(conversation,str) or not re.fullmatch(r'[0-9a-f]{12}',conversation):
+            conversation=None
+        groups.setdefault((e['agent'],conversation),[]).append(e)
+    rows=[]
+    for (agent,conversation),subset in groups.items():
+        quotes=[price(e)[0] for e in subset]
+        rows.append(dict(agent=agent,conversation=conversation,title=None,count=len(subset),
+            amount=sum(n for n in quotes if n is not None),unpriced=sum(n is None for n in quotes),
+            mix=token_mix(subset),models=sorted({e['model'] for e in subset}),
+            last_timestamp=max((e.get('timestamp') or '' for e in subset),default='') or None))
+    return sorted(rows,key=lambda r:(r['conversation'] is None,-r['amount'],-r['count'],r['agent'],r['conversation'] or ''))
+
+def daily_usage(events, start, end, zone):
+    """Calendar days in the ledger timezone; gaps mean no collected requests."""
+    days={}
+    day=start
+    while day<=end:
+        days[day.isoformat()]=dict(date=day.isoformat(),count=0,unpriced=0,amount=0.0,
+            tokens=0,input=0,read=0,write=0,output=0,incomplete=False)
+        if day==end:break
+        day+=dt.timedelta(days=1)
+    for e in events:
+        if not e.get('timestamp'):continue
+        day=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date().isoformat()
+        if day not in days:continue
+        r=days[day];amount,_=price(e);mix=token_mix([e])
+        r['count']+=1;r['unpriced']+=amount is None
+        r['amount']+=amount or 0
+        r['tokens']+=mix['total'];r['incomplete']|=mix['incomplete']
+        for k,v in mix['values'].items():r[k]+=v
+    cumulative=0.0;priced_count=0
+    for r in days.values():
+        cumulative+=r['amount'];priced_count+=r['count']-r['unpriced']
+        if r['count'] and r['count']==r['unpriced']:r['amount']=None
+        r['cumulative']=cumulative if priced_count else None
+    return list(days.values())
 
 def codex_event(payload, received=None):
     """Official PostModelRequest projection; no paths/content/identity retained.
@@ -360,8 +410,10 @@ def demo_events():
     out = []
     for i in range(40):
         m = models[i % len(models)]
-        e = dict(id='demo-'+str(i),timestamp=(first if i < 28 else previous).isoformat(),
-                 agent='Codex' if m.startswith('gpt') else 'Claude Code',model=m,
+        agent='Codex' if m.startswith('gpt') else 'Claude Code'
+        day=first.replace(day=1+i%now.day) if i<28 else previous.replace(day=1+(i*3)%28)
+        e = dict(id='demo-'+str(i),timestamp=day.isoformat(),
+                 agent=agent,model=m,conversation=conversation_key(f'demo-{agent}-{i%3}'),
                  input=12000+i*700,read=14000+i*1000,write_short=6000,write_long=2000,
                  write_total=8000,output=2500+i*300,speed='normal',context='short',issue='')
         out.append(e)
@@ -399,6 +451,7 @@ class Engine:
         self._snapshot_cache={}
         self.history_sync=None
         self.history_once=None
+        self.title_resolver=TitleResolver(self.data,lambda:subscriptions.find_binary('Codex'))
         if self.settings.get('history_sync_enabled') is True:self.start_history_sync()
     def save_settings(self):
         tmp=self.settings_file.with_suffix('.tmp');tmp.write_text(json.dumps(self.settings));tmp.chmod(0o600);tmp.replace(self.settings_file)
@@ -425,10 +478,10 @@ class Engine:
         report_version=report.stat().st_mtime_ns if report.exists() else 0
         sync_report=self.data/'history-sync-status.json'
         sync_version=sync_report.stat().st_mtime_ns if sync_report.exists() else 0
-        key=(self.mode,self.live.version(),len(self.demo),query.get('month'),query.get('agent'),query.get('model'),query.get('speed'),
+        key=(self.mode,self.live.version(),len(self.demo),query.get('month'),query.get('agent'),query.get('model'),query.get('speed'),query.get('start_date'),query.get('end_date'),
              json.dumps(self.settings,sort_keys=True),statuses,self.message,self.codex_enabled,
              self.receiver.accepted if self.receiver else None,self.receiver.rejected if self.receiver else None,
-             dt.datetime.now().astimezone().date(),dt.datetime.now(dt.timezone.utc).date(),report_version,sync_version)
+             dt.datetime.now().astimezone().date(),dt.datetime.now(dt.timezone.utc).date(),report_version,sync_version,self.title_resolver.version())
         if key not in self._snapshot_cache:
             if len(self._snapshot_cache)>24:self._snapshot_cache.clear()
             self._snapshot_cache[key]=self._snapshot(query)
@@ -437,38 +490,64 @@ class Engine:
         events = self.demo if self.mode == 'demo' else self.live.events()
         # UTC is explicit and stable across travel. Local timezone is available as a display choice.
         zone = dt.timezone.utc if self.settings.get('timezone') == 'UTC' else None
-        def month(e):
-            if not e.get('timestamp'):
-                return '未知月份'
-            d = dt.datetime.fromisoformat(e['timestamp'])
-            return d.astimezone(zone).strftime('%Y-%m')
         now=dt.datetime.now(dt.timezone.utc).astimezone(zone)
         current=now.strftime('%Y-%m');today=now.date()
         index_key=(self.mode,self.settings.get('timezone'),today,id(events))
         if getattr(self,'_index_key',None)!=index_key:
-            self._groups={};self._row_cache={};self._today=[]
+            self._groups={};self._row_cache={};self._today=[];self._month_latest={}
             self._today_priced=[];self._hook_count=0;self._indexed_count=0
             self._index_key=index_key
+            self._report_cache={};self._period_cache={}
         if len(events)>self._indexed_count:
+            self._report_cache.clear();self._period_cache.clear()
             for e in events[self._indexed_count:]:
-                mon=month(e)
+                day=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date() if e.get('timestamp') else None
+                mon=day.strftime('%Y-%m') if day else '未知月份'
+                if day:self._month_latest[mon]=max(day,self._month_latest.get(mon,day))
                 group=(mon,e['agent'],e['model'])
                 self._groups.setdefault(group,[]).append(e)
                 for tier in ('all','normal','fast','flex','ultrafast','unknown'):self._row_cache.pop((group,tier),None)
-                if e.get('timestamp') and dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date()==today:
+                if day==today:
                     self._today.append(e);self._today_priced.append(price(e)[0])
                 if e.get('source')=='PostModelRequest':self._hook_count+=1
             self._indexed_count=len(events)
         months=sorted({current,*(k[0] for k in self._groups)},reverse=True)
         selected=query.get('month') or current
-        agents=sorted({k[1] for k in self._groups if k[0]==selected})
+        start_text=query.get('start_date') or '';end_text=query.get('end_date') or ''
+        custom=bool(start_text or end_text)
+        if custom:
+            try:
+                start=dt.date.fromisoformat(start_text);end=dt.date.fromisoformat(end_text)
+            except (ValueError,TypeError):raise ValueError('请选择有效的开始和结束日期。')
+            if start>end:raise ValueError('开始日期不能晚于结束日期。')
+            if (end-start).days>3660:raise ValueError('时间区间请控制在十年以内。')
+        elif selected!='未知月份':
+            try:
+                start=dt.date.fromisoformat(selected+'-01')
+                end=start.replace(day=calendar.monthrange(start.year,start.month)[1])
+                if selected==current:end=max(today,self._month_latest.get(current,today))
+            except (ValueError,TypeError):raise ValueError('请选择有效月份。')
+        else:start=end=None
+        if custom:
+            period_key=(start_text,end_text)
+            if period_key not in self._period_cache:
+                period_groups={}
+                for e in events:
+                    if e.get('timestamp') and start<=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date()<=end:
+                        period_groups.setdefault(('range',e['agent'],e['model']),[]).append(e)
+                if len(self._period_cache)>8:self._period_cache.clear()
+                self._period_cache[period_key]=period_groups
+            period_groups=self._period_cache[period_key]
+        else:period_groups={k:v for k,v in self._groups.items() if k[0]==selected}
+        agents=sorted({k[1] for k in period_groups})
         agent=query.get('agent','全部');model=query.get('model','全部模型')
         speed=query.get('speed','all')
         if speed not in ('all','normal','fast','flex','ultrafast','unknown'):speed='all'
-        def row(key,tier='all'):
+        def row(key,tier='all',subset=None):
             cache_key=(key,tier)
-            if cache_key in self._row_cache:return self._row_cache[cache_key]
-            sub=self._groups[key] if tier=='all' else [e for e in self._groups[key] if recorded_speed(e)==tier]
+            if subset is None and cache_key in self._row_cache:return self._row_cache[cache_key]
+            source=self._groups[key] if subset is None else subset
+            sub=source if tier=='all' else [e for e in source if recorded_speed(e)==tier]
             m=key[2];priced=[price(e) for e in sub]
             p=CATALOG['models'].get(m,{})
             r=dict(model=m,agent=key[1],count=len(sub),amount=sum(n for n,_ in priced if n is not None),
@@ -481,13 +560,25 @@ class Engine:
                 pricing_basis=CATALOG['reference_basis'],
                 agent_price_source=CATALOG.get('agent_review',{}).get(key[1],{}).get('source',''),
                 source=p.get('source',CATALOG['sources'].get('anthropic' if p.get('provider')=='anthropic' else 'openai','')))
-            self._row_cache[cache_key]=r;return r
+            if subset is None:self._row_cache[cache_key]=r
+            return r
         def combine_mix(rows):
             values={k:sum(r['mix']['values'][k] for r in rows) for k in ('input','read','write','output')}
             return dict(values=values,total=sum(values.values()),incomplete=any(r['mix']['incomplete'] for r in rows))
-        keys=[k for k in self._groups if k[0]==selected and (agent=='全部' or k[1]==agent)]
+        keys=[k for k in period_groups if agent=='全部' or k[1]==agent]
         models=sorted({k[2] for k in keys})
-        rows=sorted([r for k in keys if (model=='全部模型' or k[2]==model) and (r:=row(k,speed))['count']],key=lambda r:r['amount'],reverse=True)
+        report_key=(selected,start_text,end_text,agent,model,speed)
+        if report_key not in self._report_cache:
+            rows=sorted([r for k in keys if (model=='全部模型' or k[2]==model) and
+                (r:=row(k,speed,period_groups[k] if custom else None))['count']],key=lambda r:r['amount'],reverse=True)
+            selected_events=[e for k in keys if model=='全部模型' or k[2]==model for e in period_groups[k]
+                if speed=='all' or recorded_speed(e)==speed]
+            daily=daily_usage(selected_events,start,end,zone) if start else []
+            conversations=conversation_usage(selected_events)
+            self._report_cache[report_key]=(rows,daily,conversations)
+            if len(self._report_cache)>24:
+                self._report_cache={report_key:(rows,daily,conversations)}
+        rows,daily,conversations=self._report_cache[report_key]
         current_rows=[row(k) for k in self._groups if k[0]==current]
         amount=sum(r['amount'] for r in rows)
         with self.subscription_lock: statuses={k:dict(v) for k,v in self.subscriptions.items()}
@@ -507,11 +598,24 @@ class Engine:
         for e in (sorted([e for e in self.demo if speed=='all' or recorded_speed(e)==speed],key=lambda e:e.get('timestamp',''),reverse=True)[:40] if self.mode=='demo' else self.live.recent(speed=speed)):
             amount_event,reason=price(e)
             activity.append(dict(id=e['id'],timestamp=e.get('timestamp'),received_at=e.get('received_at'),
-                model=e['model'],agent=e['agent'],conversation=e.get('conversation'),amount=amount_event,reason=reason,
+                model=e['model'],agent=e['agent'],conversation=e.get('conversation'),title=None,amount=amount_event,reason=reason,
                 speed=recorded_speed(e),standard_fallback=standard_fallback(e) and amount_event is not None,
                 input=e.get('input'),read=e.get('read'),write=e.get('write_total'),output=e.get('output'),mix=token_mix([e])))
+        titles_enabled=self.settings.get('conversation_titles_enabled') is True
+        titles={};title_state='disabled'
+        if titles_enabled and self.mode=='live':
+            wanted={r['conversation'] for r in [*conversations,*activity] if r['agent']=='Codex' and r.get('conversation')}
+            self.title_resolver.refresh(wanted)
+            titles,title_state=self.title_resolver.snapshot()
+        elif self.mode=='demo':titles=DEMO_TITLES;title_state='demo'
+        # Attach names at presentation time. Usage events and cached totals stay untouched.
+        conversations=[dict(r,title=titles.get(r['conversation']) if r['agent']=='Codex' or self.mode=='demo' else None) for r in conversations]
+        activity=[dict(r,title=titles.get(r['conversation']) if r['agent']=='Codex' or self.mode=='demo' else None) for r in activity]
         connected_agents=sorted({k[1] for k in self._groups} | ({'Codex'} if self.settings.get('history_sync_enabled') or self.codex_enabled else set()) | ({'Claude Code'} if self.receiver else set()))
         return dict(mode=self.mode,months=months,month=selected,agents=agents,connected_agents=connected_agents,selected_agent=agent,selected_model=model,selected_speed=speed,models=models,rows=rows,history=history,history_sync=sync,activity=activity,
+            start_date=start_text,end_date=end_text,period_start=start.isoformat() if start else None,period_end=end.isoformat() if end else None,
+            daily=daily,conversations=conversations,active_days=sum(r['count']>0 for r in daily),
+            conversation_titles=dict(enabled=titles_enabled,state=title_state,matched=sum(r['title'] is not None for r in conversations)),
             standard_fallback=sum(r['standard_fallback'] for r in rows),
             amount=amount,unpriced=sum(r['unpriced'] for r in rows),count=sum(r['count'] for r in rows),
             current=current,current_count=sum(r['count'] for r in current_rows),current_amount=sum(r['amount'] for r in current_rows),
@@ -637,7 +741,17 @@ class Engine:
         if action=='history-change':
             if self.history_sync:self.history_sync.wake()
             return {'ack':True}
-        if action == 'enable-history-sync' and q.get('consent') is True:
+        if action=='set-conversation-titles':
+            if q.get('enabled') is False:
+                self.settings['conversation_titles_enabled']=False
+                self.title_resolver.close()
+                self.title_resolver=TitleResolver(self.data,lambda:subscriptions.find_binary('Codex'))
+                self.save_settings()
+            elif q.get('enabled') is True and q.get('consent') is True:
+                self.settings['conversation_titles_enabled']=True;self.save_settings()
+        elif action=='refresh-conversation-titles' and self.settings.get('conversation_titles_enabled') is True:
+            self.title_resolver.refresh(set(),force=True)
+        elif action == 'enable-history-sync' and q.get('consent') is True:
             self.start_history_sync();self.settings['history_sync_enabled']=True;self.save_settings();self.mode='live'
         elif action == 'disable-history-sync':
             self.settings['history_sync_enabled']=False;self.save_settings()
@@ -695,6 +809,7 @@ class Engine:
         return result
     def close(self):
         self.closed=True
+        self.title_resolver.close()
         if self.history_sync:self.history_sync.stop()
         (self.data/'codex-consent.json').unlink(missing_ok=True)
         self.disconnect(); self.live.close()

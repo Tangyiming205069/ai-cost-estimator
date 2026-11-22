@@ -88,7 +88,8 @@ def claude_lookup(binary,cwd):
     return claude_plan(json.loads(p.stdout))
 
 def find_binary(agent):
-    candidates=([ '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
+    candidates=([ '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+        '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex',
         '/Applications/Codex.app/Contents/Resources/codex','/opt/homebrew/bin/codex'] if agent=='Codex' else
         [str(Path.home()/'.local/bin/claude'),'/opt/homebrew/bin/claude','/usr/local/bin/claude'])
     return next((p for p in candidates if Path(p).is_file() and os.access(p,os.X_OK)),None)
