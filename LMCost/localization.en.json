@@ -251,5 +251,8 @@
   "仍有未定价记录，金额仅包含可定价部分。": "Some records are unpriced; the amount includes priced records only.",
   "添加连接": "Add connection",
   "未识别套餐": "Plan not identified",
-  "月费金额未返回": "Monthly price not returned"
+  "月费金额未返回": "Monthly price not returned",
+  "你的月费（美元）": "Your monthly fee (USD)",
+  "输入月费": "Enter fee",
+  "保存月费": "Save fee"
 }

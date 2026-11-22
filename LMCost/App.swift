@@ -753,23 +753,19 @@ struct CostView: View {
                         if overrides[provider] is NSNumber {
                             LText("比较使用你的调整值："+money(number(overrides[provider]))+" / 月").font(.system(size:10)).foregroundStyle(.blue)
                         }
+                        HStack {
+                            LText("你的月费（美元）")
+                            if provider == "Codex" {TextField(L("输入月费"),text:$model.codexPlan).frame(width:90)}
+                            if provider == "Claude Code" {TextField(L("输入月费"),text:$model.claudePlan).frame(width:90)}
+                            Button(L("保存月费")){model.savePrefs()}
+                        }.textFieldStyle(.roundedBorder)
                         if let source=item["source"] as? String,let url=URL(string:source),!source.isEmpty {
                             Link(L("官方套餐价格 · 核对 \(item["checked"] as? String ?? "")"),destination:url).font(.system(size:10))
                         }
                     }.padding(10).background(Color.white.opacity(0.35),in:RoundedRectangle(cornerRadius:10))
                 }.font(.system(size:11))
                 LText("识别本机 CLI 的套餐类型；官网参考价不等于实际扣款。订阅与用量接收状态分别显示。").font(.system(size:10)).foregroundStyle(.secondary)
-                DisclosureGroup(L("特殊价格 / 手动调整（可选）")) {
-                    VStack(alignment:.leading,spacing:10) {
-                        HStack {
-                            if connectedAgents.contains("Codex") {LText("Codex $");TextField(L("自动"),text:$model.codexPlan).frame(width:80)}
-                            if connectedAgents.contains("Claude Code") {LText("Claude $");TextField(L("自动"),text:$model.claudePlan).frame(width:80)}
-                            Button(L("保存调整")){model.savePrefs()}
-                            Button(L("恢复自动")){model.codexPlan="";model.claudePlan="";model.send("reset-plan-overrides")}
-                        }.textFieldStyle(.roundedBorder)
-                        LText("用于折扣、年付折算或自定义参考；这是你的调整值，不是自动识别结果。").foregroundStyle(.secondary)
-                    }.padding(.top,8)
-                }.font(.system(size:11))
+                Button(L("恢复自动")){model.codexPlan="";model.claudePlan="";model.send("reset-plan-overrides")}.font(.system(size:11))
             }
             HStack {
                 Picker(L("月份时区"),selection:$model.timezone) {LText("UTC").tag("UTC");LText("本机时区").tag("本机时区")}.frame(width:240)
