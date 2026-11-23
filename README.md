@@ -2,7 +2,7 @@
 
 **What is your AI plan really worth?** An open-source AI usage tracker from [AI Cost Estimator](https://ai-cost-estimator.com).
 
-[Website](https://ai-cost-estimator.com/companion) · [Install](INSTALL.md) · [Contribute](CONTRIBUTING.md) · [MIT license](LICENSE)
+[Website](https://ai-cost-estimator.com/tool) · [Install](INSTALL.md) · [Contribute](CONTRIBUTING.md) · [MIT license](LICENSE)
 
 Keep a compact native window beside your coding agent. See this month's API-equivalent cost, then expand into model breakdowns, input/output/cache token shares and recent individual requests. The menu bar shows the amount without an extra product abbreviation. The original website's estimator, pricing catalog and tokenizer remain separate and available.
 
