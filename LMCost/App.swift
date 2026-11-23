@@ -780,13 +780,14 @@ struct CostView: View {
     }
     var expandedBody:some View {
         VStack(alignment:.leading,spacing:12) {
-            if model.tab == "概览" {overview}
-            else if model.tab == "用量" {usage}
-            else if model.tab == "活动" {activity}
-            else if model.tab == "连接" {connections}
-            else if model.tab == "设置" {settings}
-            else {prices}
-            Spacer(minLength:0)
+            PageViewport {
+                if model.tab == "概览" {overview}
+                else if model.tab == "用量" {usage}
+                else if model.tab == "活动" {activity}
+                else if model.tab == "连接" {connections}
+                else if model.tab == "设置" {settings}
+                else {prices}
+            }
             if !model.error.isEmpty {LText(model.error).font(.system(size:11)).foregroundStyle(.orange)}
             Divider().opacity(0.35)
             HStack(spacing:6) {
@@ -961,7 +962,7 @@ struct CostView: View {
                         ForEach(Array(model.rows.enumerated()),id:\.offset) {_,row in modelRow(row)}
                     }
                     dailyTable
-                }.frame(width:596,alignment:.leading).padding(.bottom,10)
+                }.frame(maxWidth:.infinity,alignment:.leading).padding(.bottom,10)
             }
         }
     }

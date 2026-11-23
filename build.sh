@@ -21,7 +21,7 @@ if [ "${1:-}" = --check ]; then echo 'Requirements satisfied: Apple silicon, mac
 OUT=${COMPANION_OUTPUT_DIR:-"$PWD/dist"}
 APP="$OUT/AI Cost Estimator.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" .build-cache
-"$SWIFT" -module-cache-path "$PWD/.build-cache" -sdk "$SDK" -target arm64-apple-macosx26.0 -O LMCost/WindowPlacement.swift LMCost/DateRangeSelection.swift LMCost/RangeCalendar.swift LMCost/TrendScale.swift LMCost/App.swift -o "$APP/Contents/MacOS/AI Cost Estimator"
+"$SWIFT" -module-cache-path "$PWD/.build-cache" -sdk "$SDK" -target arm64-apple-macosx26.0 -O LMCost/WindowPlacement.swift LMCost/DateRangeSelection.swift LMCost/RangeCalendar.swift LMCost/TrendScale.swift LMCost/PageViewport.swift LMCost/App.swift -o "$APP/Contents/MacOS/AI Cost Estimator"
 cp LMCost/engine.py LMCost/codex_hook.py LMCost/subscriptions.py LMCost/conversation_titles.py LMCost/history_import.py LMCost/history_sync.py LMCost/pricing.json LMCost/localization.en.json "$APP/Contents/Resources/"
 "$COMPANION_PYTHON" -B - "$APP" "$COMPANION_PYTHON" <<'PY'
 import plistlib,sys
