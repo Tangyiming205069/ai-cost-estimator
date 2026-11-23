@@ -537,23 +537,14 @@ struct UsageTrend:View {
     }
     private func color(_ key:String)->Color {
         switch key {
-        case "amount":return .teal
-        case "tokens":return .blue
+        case "amount":return Color(red:0.145,green:0.388,blue:0.922)
+        case "tokens":return Color(red:0.635,green:0.110,blue:0.686)
         case "count":return .orange
-        case "cumulative":return .purple
+        case "cumulative":return .teal
         case "input":return .indigo
         case "read":return .cyan
         case "write":return .pink
         default:return .red
-        }
-    }
-    private func dash(_ key:String)->[CGFloat] {
-        switch key {
-        case "amount":return []
-        case "tokens":return [7,3]
-        case "count":return [2,3]
-        case "cumulative":return [10,3,2,3]
-        default:return [2,2]
         }
     }
     private var selectedDay:TrendDay? {
@@ -600,7 +591,7 @@ struct UsageTrend:View {
             ForEach(points) {point in
                 LineMark(x:.value(L("日期"),point.date),y:.value(L("趋势"),point.value),series:.value("Segment",point.segment))
                     .foregroundStyle(by:.value(L("指标"),L(name(point.key))))
-                    .lineStyle(StrokeStyle(lineWidth:TrendScale.order.contains(point.key) ? 2.2:1.4,dash:dash(point.key)))
+                    .lineStyle(StrokeStyle(lineWidth:TrendScale.order.contains(point.key) ? 2.2:1.4))
                     .interpolationMethod(.linear)
                     .accessibilityLabel(Text(L(name(point.key))))
                     .accessibilityValue(Text(valueText(point.key,point.rawValue)))
@@ -612,7 +603,7 @@ struct UsageTrend:View {
                 }
             }
             if let date=selectedDay?.date {
-                RuleMark(x:.value(L("日期"),date)).foregroundStyle(Color.secondary.opacity(0.3)).lineStyle(StrokeStyle(dash:[3,3]))
+                RuleMark(x:.value(L("日期"),date)).foregroundStyle(Color.secondary.opacity(0.3)).lineStyle(StrokeStyle(lineWidth:0.8))
             }
         }
         .chartForegroundStyleScale(domain:keys.map{L(name($0))},range:keys.map{color($0)})
