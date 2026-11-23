@@ -21,13 +21,13 @@ if [ "${1:-}" = --check ]; then echo 'Requirements satisfied: Apple silicon, mac
 OUT=${COMPANION_OUTPUT_DIR:-"$PWD/dist"}
 APP="$OUT/AI Cost Estimator.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" .build-cache
-"$SWIFT" -module-cache-path "$PWD/.build-cache" -sdk "$SDK" -target arm64-apple-macosx26.0 -O LMCost/WindowPlacement.swift LMCost/DateRangeSelection.swift LMCost/RangeCalendar.swift LMCost/App.swift -o "$APP/Contents/MacOS/AI Cost Estimator"
+"$SWIFT" -module-cache-path "$PWD/.build-cache" -sdk "$SDK" -target arm64-apple-macosx26.0 -O LMCost/WindowPlacement.swift LMCost/DateRangeSelection.swift LMCost/RangeCalendar.swift LMCost/TrendScale.swift LMCost/App.swift -o "$APP/Contents/MacOS/AI Cost Estimator"
 cp LMCost/engine.py LMCost/codex_hook.py LMCost/subscriptions.py LMCost/conversation_titles.py LMCost/history_import.py LMCost/history_sync.py LMCost/pricing.json LMCost/localization.en.json "$APP/Contents/Resources/"
 "$COMPANION_PYTHON" -B - "$APP" "$COMPANION_PYTHON" <<'PY'
 import plistlib,sys
 from pathlib import Path
 app=Path(sys.argv[1]);python=sys.argv[2]
-info=dict(CFBundleExecutable='AI Cost Estimator',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Estimator',CFBundleDisplayName='AI Cost Estimator',CFBundleVersion='10',CFBundleShortVersionString='0.3.1',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
+info=dict(CFBundleExecutable='AI Cost Estimator',CFBundleIdentifier='com.aicostestimator.companion',CFBundleName='AI Cost Estimator',CFBundleDisplayName='AI Cost Estimator',CFBundleVersion='11',CFBundleShortVersionString='0.3.2',CFBundlePackageType='APPL',LSMinimumSystemVersion='26.0',LSUIElement=True,NSHighResolutionCapable=True,AICostPython=python)
 with (app/'Contents/Info.plist').open('wb') as f:plistlib.dump(info,f)
 PY
 codesign --force --sign - "$APP"

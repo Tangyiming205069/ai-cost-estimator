@@ -6,17 +6,17 @@
 
 Keep a compact native window beside your coding agent. See this month's API-equivalent cost, then expand into model breakdowns, input/output/cache token shares and recent individual requests. The menu bar shows the amount without an extra product abbreviation. The original website's estimator, pricing catalog and tokenizer remain separate and available.
 
-## Preview release · v0.3.1
+## Preview release · v0.3.2
 
 - Native Liquid Glass on macOS 26; 188 × 40 pt floating window, draggable and position-restoring.
 - Select and highlight an inclusive date range in one calendar, with Last 7 days, Last 30 days, This month, Last month and All shortcuts; agent, exact-model and recorded-speed filters; input, cache read/write and output accounting. Agent choices come only from recorded sources in the selected period; a single source is shown without a redundant dropdown.
-- Choose any combination of API value, tokens, requests and cumulative value; aligned daily charts share hover/click selection. Chart amounts display two decimals while calculations and CSV retain precision. Optional token components show disjoint input/output/cache usage. Model tables, charts and daily CSV exports share the selected date, agent, model and tier filters. Days without collected requests are not evidence of no usage; unpriced amounts stay blank.
+- Select API value, tokens, requests and cumulative value as distinct colored lines in one daily chart, or turn every line off. Multiple selected metrics use a relative scale (each metric’s period peak is 100); hover shows original values, and a single metric uses its original unit. Chart amounts display two decimals while calculations and CSV retain precision. Optional token components show disjoint input/output/cache usage. Model tables, charts and daily CSV exports share the selected date, agent, model and tier filters. Days without collected requests are not evidence of no usage; unpriced amounts stay blank.
 - Daily aggregates are built once per local process and updated only for newly appended records. Period switches combine those aggregates without repricing history. Selection requests are coalesced while commands remain ordered; the displayed period stays labeled during updates.
 - Standard / Fast breakdowns show request shares, unchanged token counts and API values. Fast uses its verified official rate; absent a verified Fast rate, the same model’s Standard price is visibly labeled as a reference.
 - Opt-in local Codex history sync, filesystem notifications plus a five-second fallback; the UI refreshes every second. Records appear after the client writes request usage, not as a per-token stream.
 - Recent usage can be grouped by conversation or viewed request by request. Optional local Codex titles are matched by the existing conversation hash in both views. Missing identities remain unassociated; missing titles use stable markers rather than changing row numbers.
 - Unknown prices or required fields remain unpriced; zero is never used as a substitute for unknown.
-- English / 中文, switchable in Settings or the window menu; your choice is remembered.
+- English / 中文, switchable in the native header; your choice is remembered.
 - Pause and resume, amount/token display choices, and Control–Option–L hide/show.
 - Collection is off by default. Demo data is only shown when explicitly selected.
 
@@ -62,10 +62,11 @@ Input/cache relationships and write TTL requirements are model-specific. Reasoni
 python3 -B -m unittest discover -s tests -v
 bash scripts/test-window-placement.sh
 bash scripts/test-date-range.sh
+bash scripts/test-trend-scale.sh
 bash build.sh
 ```
 
-87 synthetic ledger and metadata tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering, title matching and notification-driven refresh. Eight calendar tests cover two-click selection, cross-month/year ranges, reversed endpoints, leap dates and timezone transitions. Nine native geometry tests cover expanded dragging, compact placement, repeated resize cycles and screen boundaries. Native UI changes also require real-window checks. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
+87 synthetic ledger and metadata tests cover pricing, partial data, deduplication, restart, month boundaries, history append/rotation, privacy filtering, title matching and notification-driven refresh. Seven chart tests cover empty selections, mixed-unit scales, missing values and precision. Eight calendar tests cover two-click selection, cross-month/year ranges, reversed endpoints, leap dates and timezone transitions. Nine native geometry tests cover expanded dragging, compact placement, repeated resize cycles and screen boundaries. Native UI changes also require real-window checks. Never use private histories as test fixtures. Current source retains the internal `LMCost/` directory name for continuity; the public product is AI Cost Estimator.
 
 The macOS UI is in `LMCost/App.swift`; the shared Python ledger and pricing engine are in `engine.py`; adapters are in `history_import.py`, `history_sync.py`, `codex_hook.py` and `subscriptions.py`. A richer cross-agent adapter API and native CLI footers are future work, not included features.
 

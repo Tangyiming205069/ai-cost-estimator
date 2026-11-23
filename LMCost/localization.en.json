@@ -332,5 +332,18 @@
   "下一个月": "Next month",
   "选择结束日期": "Choose end date",
   "再点一天，确定结束日期": "Choose another day to finish the range",
-  "先点开始日，再点结束日；中间日期自动选中": "Choose a start day, then an end day; the days between are included"
+  "先点开始日，再点结束日；中间日期自动选中": "Choose a start day, then an end day; the days between are included",
+  "趋势": "Trend",
+  "已显示": "Shown",
+  "已隐藏": "Hidden",
+  "已选择": "Selected",
+  "未选择": "Not selected",
+  "相对趋势 · 各指标峰值 = 100": "Relative trends · Each series peaks at 100",
+  "移动鼠标查看每日数值": "Hover to see daily values",
+  "金额仅含已定价请求": "Amounts include priced requests only",
+  "含未定价 · 金额仅含已定价请求": "Includes unpriced requests · Amounts cover priced requests only",
+  "上月": "Last month",
+  "指标": "Metrics",
+  "各指标峰值 = 100": "Each series peaks at 100",
+  "移动鼠标查看实际数值": "Hover to see original values"
 }
