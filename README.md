@@ -6,6 +6,8 @@
 
 Keep a compact native window beside your coding agent. See this month's API-equivalent cost, then expand into model breakdowns, input/output/cache token shares and recent individual requests. The menu bar shows the amount without an extra product abbreviation. The original website's estimator, pricing catalog and tokenizer remain separate and available.
 
+Where do the numbers come from? See [Usage sources and accuracy](#usage-sources-and-accuracy) for the exact inputs, calculations and verification limits.
+
 ## Preview release · v0.3.2
 
 - Native Liquid Glass on macOS 26; 188 × 40 pt floating window, draggable and position-restoring.
@@ -37,6 +39,57 @@ bash scripts/install.sh
 ```
 
 The second command builds and installs in `~/Applications/AI Cost Estimator.app` and opens it. Connect Codex explicitly in the app to start collection. Installing does not enable collection. A custom destination and `--no-open` are supported. Existing apps are never overwritten.
+
+## Usage sources and accuracy
+
+**Token counts are read from recorded request usage, not estimated from conversation length. Dollar amounts are a separate API-equivalent calculation.** Accurate copying of a local record does not establish complete account coverage or agreement with a provider's invoice.
+
+### What the Codex history adapter actually reads
+
+After opt-in, [history_sync.py](LMCost/history_sync.py) scans the default local directories `~/.codex/sessions` and `~/.codex/archived_sessions`, including supported `.jsonl` and `.jsonl.zst` files. The current UI does not automatically follow a custom `CODEX_HOME`. OpenAI documents Codex's [local state location](https://learn.chatgpt.com/docs/config-file/config-advanced#config-and-state-locations); the exact collection paths and parser used by this tool are visible in its source.
+
+[history_import.py](LMCost/history_import.py) selects per-response `token_usage_record` entries and their `payload.usage`. It does **not** add thread/turn cumulative totals or legacy `event_msg/token_count` snapshots to request totals. This is a version-specific local file adapter, not a promised stable public API. The source-status table above states which formats and connections have been locally validated.
+
+The local Codex record has flat fields; the [Responses API usage schema](https://developers.openai.com/api/reference/resources/responses/methods/retrieve) has nested detail fields. The official documentation explains the token categories; it is not evidence that this app queries that API or retrieves an account-wide usage export.
+
+| Local record field | How this tool uses it |
+| --- | --- |
+| `usage.input_tokens` | Total input for the request, including its cached portions. The displayed ordinary-input bucket subtracts cached reads and, when independently accounted for, cache writes. |
+| `usage.cached_input_tokens` | Recorded cache-read tokens. They are a subset of total input, not extra input to add on top. |
+| `usage.cache_write_input_tokens` | Recorded cache-write count when supplied. Models with separate write pricing require the applicable write buckets; models without a separate write premium retain writes inside ordinary input. |
+| `usage.output_tokens` | Recorded output, including reasoning tokens. It is not just the visible answer or the number of tokens written to files. |
+| `usage.reasoning_output_tokens` | Checked against output when supplied as a valid count; never added to output again. |
+| `usage.total_tokens` | Checked against input plus output when supplied as a valid count. The displayed known-token total sums disjoint buckets and is flagged incomplete if required counts are missing. |
+
+The inclusion of cached tokens in input, and reasoning tokens in output, matches [OpenAI's usage explanation](https://developers.openai.com/api/docs/guides/agents-api/observability#understand-token-usage). Input can include instructions, history and tool results on every request, so summed usage can greatly exceed the text a person typed. Repeated processing of shared context is still request usage.
+
+For example, a **synthetic** request with 12,000 input, 4,000 cached input, zero cache writes and 2,000 output (including 1,500 reasoning) gives 8,000 ordinary input + 4,000 cache read + 0 cache write + 2,000 output = **14,000 tokens**. Neither cached input nor reasoning is counted twice. This example is covered by [test_history.py](tests/test_history.py).
+
+### What does cache-write zero mean?
+
+There are different cases, and they should not be confused:
+
+- An explicit zero in the source record is the client's reported zero. It does not independently prove that the provider performed no physical cache writes.
+- For a model with no separate write premium, the current displayed write bucket is zero by design; those tokens remain in ordinary input. It is not a measurement of the provider's cache infrastructure.
+- If an independently required write field is absent, the history adapter keeps it unknown and leaves affected requests unpriced. An aggregate sums known portions; check its incomplete-token state or the daily CSV's `incomplete_tokens`, rather than treating a zero known subtotal as proof of complete zero usage.
+
+Cache reads and writes concern model prompt caching, not this Mac's disk I/O. Caching behavior and charges vary by model; see [OpenAI's prompt-caching documentation](https://developers.openai.com/api/docs/guides/prompt-caching). The actual conversion and completeness rules are in [engine.py](LMCost/engine.py), particularly `codex_event` and `token_mix`.
+
+### What is checked, and what remains uncertain?
+
+The collector hashes stable response IDs and uses an SQLite primary key to prevent the same recorded response being imported twice. It skips inherited records belonging to another thread. Missing reliable identity, missing usage or unusable timestamps are skipped and counted in import/sync diagnostics. Missing model, tier or required pricing information leaves affected requests unpriced; available token counts can still be shown.
+
+Required token buckets are validated as nonnegative integers. The converter checks that cached input does not exceed total input and that independently accounted read/write buckets fit within input. Usable optional totals and reasoning counts are checked for consistency. Records failing these checks are not presented as fully priced requests; absent optional counters cannot provide an independent cross-check.
+
+Model and tier metadata come from the matching local turn context and recorded settings. They describe client configuration, not independent confirmation of the model/tier ultimately served after routing. Other devices, unwritten or deleted records, unsupported formats and collection gaps are outside coverage. The current tool does not reconcile against a provider bill.
+
+To inspect or reproduce the checks:
+
+- [History tests](tests/test_history.py) cover field projection, plain/compressed files, inherited records, missing fields and duplicate imports. [Sync tests](tests/test_history_sync.py) cover appends, rotation and restart. [Analytics tests](tests/test_analytics.py) check daily/model/conversation totals against request-level values; [billing tests](tests/test_bill.py) cover pricing and tier partitions. Run `python3 -B -m unittest discover -s tests -v`.
+- For a local spot-check, compare one original per-response `usage` object with its sanitized ledger buckets using the mapping above. Compare the same request or the same date range, timezone and filters; a context-window counter or cumulative thread snapshot is a different quantity. Keep private session files local and use synthetic fixtures for public bug reports.
+- Passing tests establishes the behavior of this adapter and its arithmetic. It does not certify the provider's upstream accounting, guarantee every installation's coverage, or justify a statistical confidence percentage. Codex history has been exercised locally; the experimental Claude Code receiver and optional Codex hook do not have the same real-session validation.
+
+Source descriptions reviewed on **2026-11-23**. This does not refresh the dated pricing verification in [PRICING.md](PRICING.md) or [pricing.json](LMCost/pricing.json).
 
 ## Privacy and coverage
 
