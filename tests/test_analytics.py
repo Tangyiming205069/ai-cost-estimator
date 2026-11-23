@@ -114,6 +114,64 @@ class Analytics(unittest.TestCase):
         self.app.close();self.app=engine.Engine(self.temp.name)
         self.assertEqual(self.app.snapshot(q)['count'],1)
 
+    def test_period_switches_and_outside_appends_do_not_reprice_history(self):
+        for i in range(100):
+            self.add(str(i),'2026-10-02T00:00:00Z',conversation=('a' if i%2 else 'b')*12)
+        # The activity feed is independent of range aggregation.
+        with patch.object(self.app.live,'recent',return_value=[]),patch.object(engine,'price',wraps=engine.price) as quote:
+            first=self.app.snapshot({'month':'2026-10'})
+            self.assertEqual(quote.call_count,100)
+            quote.reset_mock()
+            ranged=self.app.snapshot({'start_date':'2026-10-02','end_date':'2026-10-02'})
+            self.assertEqual(quote.call_count,0)
+            self.assertEqual(ranged['count'],first['count'])
+            self.assertAlmostEqual(ranged['amount'],first['amount'])
+            self.add('outside','2026-09-02T00:00:00Z')
+            again=self.app.snapshot({'month':'2026-10'})
+            self.assertEqual(quote.call_count,1)
+            self.assertEqual(again['daily'],first['daily'])
+            quote.reset_mock()
+            self.add('inside','2026-10-02T00:00:00Z')
+            updated=self.app.snapshot({'start_date':'2026-10-02','end_date':'2026-10-02'})
+            self.assertEqual(quote.call_count,1)
+            self.assertEqual(updated['count'],101)
+
+    def test_incremental_summaries_match_request_level_reference(self):
+        records=[]
+        cases=[{},dict(speed='fast'),dict(speed='unknown'),dict(input=None),
+            dict(agent='Codex',model='gpt-6-sol',input=300000,read=0,output=1000),
+            dict(agent='Codex',model='gpt-6-sol',input=1000,read=0,output=1000),
+            dict(model='claude-haiku-5-5',input=1000,read=150000),
+            dict(model='unknown-model'),dict(issue='synthetic incomplete usage'),
+            dict(agent='Codex',model='gpt-5.4-mini'),dict(agent='Codex',model='gpt-6.1-sol',speed='fast')]
+        for i in range(110):
+            records.append(self.add(str(i),f'2026-10-{1+i%8:02d}T12:00:00Z',
+                conversation=('abcdef123456' if i%3 else 'invalid'),**cases[i%len(cases)]))
+        q={'start_date':'2026-10-02','end_date':'2026-10-06'}
+        selected=[e for e in records if '2026-10-02'<=e['timestamp'][:10]<='2026-10-06']
+        actual=self.app.snapshot(q)
+        expected=engine.daily_usage(selected,dt.date(2026,10,2),dt.date(2026,10,6),dt.timezone.utc)
+        for got,want in zip(actual['daily'],expected):
+            for key in want:
+                if isinstance(want[key],float):self.assertAlmostEqual(got[key],want[key])
+                else:self.assertEqual(got[key],want[key])
+        self.assertEqual(actual['mix'],engine.token_mix(selected))
+        expected_chats=engine.conversation_usage(selected)
+        for got,want in zip(actual['conversations'],expected_chats):
+            for key in want:
+                if key=='amount':self.assertAlmostEqual(got[key],want[key])
+                else:self.assertEqual(got[key],want[key])
+        for row in actual['rows']:
+            subset=[e for e in selected if e['model']==row['model'] and e['agent']==row['agent']]
+            quotes=[engine.price(e) for e in subset]
+            self.assertEqual(row['applied_rates'],engine.applied_rates(subset,quotes))
+            self.assertEqual(row['mix'],engine.token_mix(subset))
+            for key,value in engine.priced_components(subset).items():self.assertAlmostEqual(row['cost_buckets'][key],value)
+            for got,want in zip(row['speeds'],engine.speed_breakdown(subset,quotes)):
+                for key in want:
+                    if isinstance(want[key],float):self.assertAlmostEqual(got[key],want[key])
+                    else:self.assertEqual(got[key],want[key])
+
     def test_unpriced_only_and_incomplete_tokens_are_explicit(self):
         self.add('incomplete','2026-10-01T00:00:00Z',input=None)
         s=self.app.snapshot({'start_date':'2026-10-01','end_date':'2026-10-01'})

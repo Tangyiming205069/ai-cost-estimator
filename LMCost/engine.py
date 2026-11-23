@@ -300,6 +300,71 @@ def otlp_events(obj):
                     if e:
                         yield e
 
+class UsageTotals:
+    """Mergeable usage metadata. Raw records are priced only when first indexed."""
+    def __init__(self):
+        self.count=self.unpriced=self.standard_fallback=self.write_total=0
+        self.amount=0.0
+        self.buckets={k:0 for k in BUCKETS}
+        self.mix=dict(values={k:0 for k in ('input','read','write','output')},total=0,incomplete=False)
+        self.cost_buckets={k:0.0 for k in BUCKETS}
+        self.rates={k:set() for k in BUCKETS}
+        self.reasons=set()
+        self.models=set()
+        self.last_timestamp=''
+
+    def add(self,e,rate_cache):
+        amount,reason=price(e)
+        self.count+=1;self.unpriced+=amount is None;self.amount+=amount or 0
+        self.standard_fallback+=standard_fallback(e) and amount is not None
+        self.write_total+=e.get('write_total') or 0
+        self.models.add(e['model']);self.last_timestamp=max(self.last_timestamp,e.get('timestamp') or '')
+        if reason:self.reasons.add(reason)
+        for k in BUCKETS:
+            if self.buckets[k] is not None:
+                self.buckets[k]=self.buckets[k]+e[k] if e.get(k) is not None else None
+        mix=token_mix([e])
+        self.mix['total']+=mix['total'];self.mix['incomplete']|=mix['incomplete']
+        for k,v in mix['values'].items():self.mix['values'][k]+=v
+        if amount is None:return
+        p=CATALOG['models'][e['model']]
+        keys=('input','read','output') if p.get('cache_accounting')=='no_write_premium' else BUCKETS
+        prompt=sum(e[k] for k in keys if k!='output')
+        band=(e['model'],e.get('speed'),prompt>p.get('threshold',float('inf')))
+        if band not in rate_cache:
+            rate_cache[band]=applied_rates([e],[(amount,reason)])
+        rates=rate_cache[band]
+        # The common speed/context multiplier cancels in these component shares.
+        weights={k:e[k]*rates[k][0] for k in keys}
+        total=sum(weights.values())
+        for k in keys:
+            self.rates[k].update(rates[k])
+            if total:self.cost_buckets[k]+=amount*weights[k]/total
+
+    def merge(self,other):
+        self.count+=other.count;self.unpriced+=other.unpriced;self.amount+=other.amount
+        self.standard_fallback+=other.standard_fallback;self.write_total+=other.write_total
+        self.reasons.update(other.reasons);self.models.update(other.models)
+        self.last_timestamp=max(self.last_timestamp,other.last_timestamp)
+        for k in BUCKETS:
+            self.buckets[k]=None if self.buckets[k] is None or other.buckets[k] is None else self.buckets[k]+other.buckets[k]
+            self.cost_buckets[k]+=other.cost_buckets[k];self.rates[k].update(other.rates[k])
+        for k,v in other.mix['values'].items():self.mix['values'][k]+=v
+        self.mix['total']+=other.mix['total'];self.mix['incomplete']|=other.mix['incomplete']
+
+    def row(self,agent,model,speeds):
+        p=CATALOG['models'].get(model,{})
+        return dict(model=model,agent=agent,count=self.count,amount=self.amount,unpriced=self.unpriced,
+            reason='；'.join(sorted(self.reasons)),buckets=self.buckets,write_total=self.write_total,
+            cache_accounting=p.get('cache_accounting','separate_writes'),mix=self.mix,
+            cost_buckets=self.cost_buckets,rates=p,applied_rates={k:sorted(v) for k,v in self.rates.items()},
+            speeds=[dict(speed=tier,count=g.count,request_share=g.count/self.count,mix=g.mix,
+                amount=g.amount,unpriced=g.unpriced,standard_fallback=g.standard_fallback)
+                for tier in ('normal','fast','flex','ultrafast','unknown') if (g:=speeds.get(tier))],
+            standard_fallback=self.standard_fallback,pricing_basis=CATALOG['reference_basis'],
+            agent_price_source=CATALOG.get('agent_review',{}).get(agent,{}).get('source',''),
+            source=p.get('source',CATALOG['sources'].get('anthropic' if p.get('provider')=='anthropic' else 'openai','')))
+
 class Ledger:
     def __init__(self, path):
         self.lock = threading.RLock()
@@ -481,7 +546,7 @@ class Engine:
         key=(self.mode,self.live.version(),len(self.demo),query.get('month'),query.get('agent'),query.get('model'),query.get('speed'),query.get('start_date'),query.get('end_date'),
              json.dumps(self.settings,sort_keys=True),statuses,self.message,self.codex_enabled,
              self.receiver.accepted if self.receiver else None,self.receiver.rejected if self.receiver else None,
-             dt.datetime.now().astimezone().date(),dt.datetime.now(dt.timezone.utc).date(),report_version,sync_version,self.title_resolver.version())
+             dt.datetime.now().astimezone().date(),dt.datetime.now(dt.timezone.utc).date(),report_version,sync_version,self.title_resolver.version(),json.dumps(CATALOG,sort_keys=True),time.tzname,time.timezone)
         if key not in self._snapshot_cache:
             if len(self._snapshot_cache)>24:self._snapshot_cache.clear()
             self._snapshot_cache[key]=self._snapshot(query)
@@ -492,25 +557,25 @@ class Engine:
         zone = dt.timezone.utc if self.settings.get('timezone') == 'UTC' else None
         now=dt.datetime.now(dt.timezone.utc).astimezone(zone)
         current=now.strftime('%Y-%m');today=now.date()
-        index_key=(self.mode,self.settings.get('timezone'),today,id(events))
-        if getattr(self,'_index_key',None)!=index_key:
-            self._groups={};self._row_cache={};self._today=[];self._month_latest={}
-            self._today_priced=[];self._hook_count=0;self._indexed_count=0
-            self._index_key=index_key
-            self._report_cache={};self._period_cache={}
-        if len(events)>self._indexed_count:
-            self._report_cache.clear();self._period_cache.clear()
-            for e in events[self._indexed_count:]:
-                day=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date() if e.get('timestamp') else None
-                mon=day.strftime('%Y-%m') if day else '未知月份'
-                if day:self._month_latest[mon]=max(day,self._month_latest.get(mon,day))
-                group=(mon,e['agent'],e['model'])
-                self._groups.setdefault(group,[]).append(e)
-                for tier in ('all','normal','fast','flex','ultrafast','unknown'):self._row_cache.pop((group,tier),None)
-                if day==today:
-                    self._today.append(e);self._today_priced.append(price(e)[0])
-                if e.get('source')=='PostModelRequest':self._hook_count+=1
-            self._indexed_count=len(events)
+        # Dates are indexed once; appending a request updates only its day/source leaf.
+        # Neither changing the period nor crossing midnight rebuilds historical usage.
+        index_key=(self.mode,self.settings.get('timezone'),time.tzname,time.timezone,id(events),
+                   json.dumps(CATALOG,sort_keys=True))
+        if getattr(self,'_index_key',None)!=index_key or len(events)<getattr(self,'_indexed_count',0):
+            self._groups=set();self._day_groups={};self._month_latest={};self._rate_cache={}
+            self._indexed_count=0;self._index_key=index_key
+        for e in events[self._indexed_count:]:
+            day=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date() if e.get('timestamp') else None
+            mon=day.strftime('%Y-%m') if day else '未知月份'
+            if day:self._month_latest[mon]=max(day,self._month_latest.get(mon,day))
+            self._groups.add((mon,e['agent'],e['model']))
+            conversation=e.get('conversation')
+            if not isinstance(conversation,str) or not re.fullmatch(r'[0-9a-f]{12}',conversation):conversation=None
+            key=(e['agent'],e['model'],recorded_speed(e),conversation)
+            groups=self._day_groups.setdefault(day,{})
+            if key not in groups:groups[key]=UsageTotals()
+            groups[key].add(e,self._rate_cache)
+        self._indexed_count=len(events)
         months=sorted({current,*(k[0] for k in self._groups)},reverse=True)
         selected=query.get('month') or current
         start_text=query.get('start_date') or '';end_text=query.get('end_date') or ''
@@ -528,58 +593,51 @@ class Engine:
                 if selected==current:end=max(today,self._month_latest.get(current,today))
             except (ValueError,TypeError):raise ValueError('请选择有效月份。')
         else:start=end=None
-        if custom:
-            period_key=(start_text,end_text)
-            if period_key not in self._period_cache:
-                period_groups={}
-                for e in events:
-                    if e.get('timestamp') and start<=dt.datetime.fromisoformat(e['timestamp']).astimezone(zone).date()<=end:
-                        period_groups.setdefault(('range',e['agent'],e['model']),[]).append(e)
-                if len(self._period_cache)>8:self._period_cache.clear()
-                self._period_cache[period_key]=period_groups
-            period_groups=self._period_cache[period_key]
-        else:period_groups={k:v for k,v in self._groups.items() if k[0]==selected}
-        agents=sorted({k[1] for k in period_groups})
+        period_groups=[(day,key,g) for day,groups in self._day_groups.items()
+            if (start<=day<=end if day is not None and start else day is None and start is None)
+            for key,g in groups.items()]
+        agents=sorted({key[0] for _,key,_ in period_groups})
         agent=query.get('agent','全部');model=query.get('model','全部模型')
         speed=query.get('speed','all')
         if speed not in ('all','normal','fast','flex','ultrafast','unknown'):speed='all'
-        def row(key,tier='all',subset=None):
-            cache_key=(key,tier)
-            if subset is None and cache_key in self._row_cache:return self._row_cache[cache_key]
-            source=self._groups[key] if subset is None else subset
-            sub=source if tier=='all' else [e for e in source if recorded_speed(e)==tier]
-            m=key[2];priced=[price(e) for e in sub]
-            p=CATALOG['models'].get(m,{})
-            r=dict(model=m,agent=key[1],count=len(sub),amount=sum(n for n,_ in priced if n is not None),
-                unpriced=sum(n is None for n,_ in priced),reason='；'.join(sorted({r for n,r in priced if n is None})),
-                buckets={k:(None if any(e.get(k) is None for e in sub) else sum(e[k] for e in sub)) for k in BUCKETS},
-                write_total=sum(e.get('write_total') or 0 for e in sub),
-                cache_accounting=p.get('cache_accounting','separate_writes'),mix=token_mix(sub),
-                cost_buckets=priced_components(sub),rates=p,applied_rates=applied_rates(sub,priced),speeds=speed_breakdown(sub,priced),
-                standard_fallback=sum(standard_fallback(e) and n is not None for e,(n,_) in zip(sub,priced)),
-                pricing_basis=CATALOG['reference_basis'],
-                agent_price_source=CATALOG.get('agent_review',{}).get(key[1],{}).get('source',''),
-                source=p.get('source',CATALOG['sources'].get('anthropic' if p.get('provider')=='anthropic' else 'openai','')))
-            if subset is None:self._row_cache[cache_key]=r
-            return r
+        models=sorted({key[1] for _,key,_ in period_groups if agent=='全部' or key[0]==agent})
+        model_groups={};speed_groups={};conversation_groups={};day_groups={}
+        def combine(groups,key,g):
+            if key not in groups:groups[key]=UsageTotals()
+            groups[key].merge(g)
+        for day,(source,model_id,tier,conversation),g in period_groups:
+            if (agent!='全部' and source!=agent) or (model!='全部模型' and model_id!=model) or (speed!='all' and tier!=speed):continue
+            key=(source,model_id)
+            combine(model_groups,key,g);combine(speed_groups,(key,tier),g)
+            combine(conversation_groups,(source,conversation),g)
+            if day:combine(day_groups,day,g)
+        rows=sorted([g.row(source,model_id,{tier:speed_groups[((source,model_id),tier)]
+            for tier in ('normal','fast','flex','ultrafast','unknown') if ((source,model_id),tier) in speed_groups})
+            for (source,model_id),g in model_groups.items()],key=lambda r:r['amount'],reverse=True)
+        conversations=sorted([dict(agent=source,conversation=conversation,title=None,count=g.count,
+            amount=g.amount,unpriced=g.unpriced,mix=g.mix,models=sorted(g.models),last_timestamp=g.last_timestamp or None)
+            for (source,conversation),g in conversation_groups.items()],
+            key=lambda r:(r['conversation'] is None,-r['amount'],-r['count'],r['agent'],r['conversation'] or ''))
+        daily=[];day=start;cumulative=0.0;priced_count=0
+        while day is not None and day<=end:
+            g=day_groups.get(day) or UsageTotals()
+            cumulative+=g.amount;priced_count+=g.count-g.unpriced
+            daily.append(dict(date=day.isoformat(),count=g.count,unpriced=g.unpriced,
+                amount=None if g.count and g.count==g.unpriced else g.amount,
+                tokens=g.mix['total'],**g.mix['values'],incomplete=g.mix['incomplete'],
+                cumulative=cumulative if priced_count else None))
+            if day==end:break
+            day+=dt.timedelta(days=1)
+        current_groups={};today_totals=UsageTotals()
+        for day,groups in self._day_groups.items():
+            if not day or day.strftime('%Y-%m')!=current:continue
+            for (source,model_id,_,_),g in groups.items():
+                combine(current_groups,(source,model_id),g)
+                if day==today:today_totals.merge(g)
+        current_rows=[g.row(source,model_id,{}) for (source,model_id),g in current_groups.items()]
         def combine_mix(rows):
             values={k:sum(r['mix']['values'][k] for r in rows) for k in ('input','read','write','output')}
             return dict(values=values,total=sum(values.values()),incomplete=any(r['mix']['incomplete'] for r in rows))
-        keys=[k for k in period_groups if agent=='全部' or k[1]==agent]
-        models=sorted({k[2] for k in keys})
-        report_key=(selected,start_text,end_text,agent,model,speed)
-        if report_key not in self._report_cache:
-            rows=sorted([r for k in keys if (model=='全部模型' or k[2]==model) and
-                (r:=row(k,speed,period_groups[k] if custom else None))['count']],key=lambda r:r['amount'],reverse=True)
-            selected_events=[e for k in keys if model=='全部模型' or k[2]==model for e in period_groups[k]
-                if speed=='all' or recorded_speed(e)==speed]
-            daily=daily_usage(selected_events,start,end,zone) if start else []
-            conversations=conversation_usage(selected_events)
-            self._report_cache[report_key]=(rows,daily,conversations)
-            if len(self._report_cache)>24:
-                self._report_cache={report_key:(rows,daily,conversations)}
-        rows,daily,conversations=self._report_cache[report_key]
-        current_rows=[row(k) for k in self._groups if k[0]==current]
         amount=sum(r['amount'] for r in rows)
         with self.subscription_lock: statuses={k:dict(v) for k,v in self.subscriptions.items()}
         overrides=self.settings.get('plan_overrides',{})
@@ -622,8 +680,8 @@ class Engine:
             current_unpriced=sum(r['unpriced'] for r in current_rows),plan=plan,plans=plans,
             subscriptions=statuses,plan_overrides=overrides,current_plan=current_plan,
             mix=combine_mix(rows),cost_buckets={k:sum(r['cost_buckets'][k] for r in rows) for k in BUCKETS},
-            current_mix=combine_mix(current_rows),today_count=len(self._today),
-            today_amount=sum(n for n in self._today_priced if n is not None),today_unpriced=sum(n is None for n in self._today_priced),
+            current_mix=combine_mix(current_rows),today_count=today_totals.count,
+            today_amount=today_totals.amount,today_unpriced=today_totals.unpriced,
             primary_metric=self.settings.get('primary_metric','month_cost'),
             timezone=self.settings.get('timezone','UTC'),message=(
                 '接收中 · 已收到 API request 事件；仅覆盖连接后的本机会话'

@@ -3,6 +3,12 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
+  native-selection:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/test-date-range.sh
+      - run: bash scripts/test-window-placement.sh
   ledger:
     runs-on: ubuntu-latest
     steps:

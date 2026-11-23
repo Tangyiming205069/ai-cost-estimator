@@ -110,6 +110,11 @@ final class Model: ObservableObject {
     var input: FileHandle?
     var buffer = Data()
     var queue = DispatchQueue(label: "lm.bridge")
+    var requestInFlight=false
+    var activeQuery:[String:Any]?
+    var pendingSnapshot:[String:Any]?
+    var pendingActions:[[String:Any]]=[]
+    var filterWork:DispatchWorkItem?
     var onChange: (() -> Void)?
     var onDrag: ((CGSize,Bool) -> Void)?
     var lastDragAt: TimeInterval = 0
@@ -162,6 +167,9 @@ final class Model: ObservableObject {
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.send() }
     }
     func receive(_ obj: [String:Any]) {
+        // One outstanding command; replace queued polling/filter snapshots with the latest.
+        // Actions remain ordered and are never dropped, including ACK-only commands.
+        defer {requestInFlight=false;activeQuery=nil;flushRequests()}
         if let e = obj["error"] as? String { error = e }
         if let s = obj["snapshot"] as? [String:Any] {
             guard (month.isEmpty || s["month"] as? String == month),
@@ -194,32 +202,80 @@ final class Model: ObservableObject {
         var q: [String:Any] = ["action":action,"month":month,"agent":agent,"model":selectedModel,"speed":selectedSpeed,
             "start_date":usesCustomRange ? rangeStart:"","end_date":usesCustomRange ? rangeEnd:""]
         q.merge(extras) { _,new in new }
+        if action == "snapshot" {
+            pendingSnapshot=q
+            if let activeQuery=activeQuery,NSDictionary(dictionary:activeQuery).isEqual(to:q) {pendingSnapshot=nil}
+        } else {
+            pendingActions.append(q);pendingSnapshot=nil
+        }
+        flushRequests()
+    }
+    func flushRequests() {
+        guard !requestInFlight,!serviceUnavailable,!stopping else{return}
+        let q:[String:Any]
+        if !pendingActions.isEmpty {q=pendingActions.removeFirst()}
+        else if let next=pendingSnapshot {q=next;pendingSnapshot=nil}
+        else {return}
+        requestInFlight=true;activeQuery=q
         if let data = try? JSONSerialization.data(withJSONObject:q) {
-            do { try input?.write(contentsOf: data + Data([10])) }
-            catch { self.error = "本机服务已断开，请重新打开 AI Cost Estimator。" }
+            queue.async { [weak self] in
+                do {try self?.input?.write(contentsOf:data+Data([10]))}
+                catch {DispatchQueue.main.async {self?.serviceUnavailable=true;self?.loading=false;self?.error="本机服务已断开，请重新打开 AI Cost Estimator。"}}
+            }
         }
     }
-    func filter() { selectedRow = ""; loading = true; send() }
+    func filter() {
+        selectedRow="";loading=true;filterWork?.cancel()
+        let work=DispatchWorkItem { [weak self] in self?.send() }
+        filterWork=work;DispatchQueue.main.asyncAfter(deadline:.now()+0.1,execute:work)
+    }
     var usesCustomRange:Bool {tab == "用量" && periodMode == "custom"}
     var reportZone:TimeZone {timezone == "UTC" ? TimeZone(secondsFromGMT:0)!:TimeZone.current}
     func dayString(_ date:Date)->String {
         let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX")
         formatter.timeZone=reportZone;formatter.dateFormat="yyyy-MM-dd";return formatter.string(from:date)
     }
-    func applyRange() {
-        let start=dayString(draftStart),end=dayString(draftEnd)
-        guard start<=end else {error="开始日期不能晚于结束日期。";return}
-        guard draftEnd.timeIntervalSince(draftStart)<=3660*86400 else {error="时间区间请控制在十年以内。";return}
-        error="";rangeStart=start;rangeEnd=end;resetPeriodFilters()
+    var reportCalendar:Calendar {var c=Calendar(identifier:.gregorian);c.timeZone=reportZone;return c}
+    var draftRangeError:String? {
+        let count=reportCalendar.dateComponents([.day],from:reportCalendar.startOfDay(for:draftStart),to:reportCalendar.startOfDay(for:draftEnd)).day ?? -1
+        return count<0 ? "开始日期不能晚于结束日期。":count>3660 ? "时间区间请控制在十年以内。":nil
     }
-    func beginRange() {
-        if rangeStart.isEmpty {
-            let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX")
-            formatter.timeZone=reportZone;formatter.dateFormat="yyyy-MM-dd"
-            draftStart=formatter.date(from:snapshot["period_start"] as? String ?? "") ?? Date()
-            draftEnd=formatter.date(from:snapshot["period_end"] as? String ?? "") ?? Date()
+    @discardableResult func applyRange()->Bool {
+        let start=dayString(draftStart),end=dayString(draftEnd)
+        if let message=draftRangeError {error=message;return false}
+        error="";rangeStart=start;rangeEnd=end;periodMode="custom";resetPeriodFilters();return true
+    }
+    func prepareRange() {
+        let formatter=DateFormatter();formatter.locale=Locale(identifier:"en_US_POSIX")
+        formatter.timeZone=reportZone;formatter.dateFormat="yyyy-MM-dd"
+        draftStart=formatter.date(from:usesCustomRange ? rangeStart:(snapshot["period_start"] as? String ?? "")) ?? Date()
+        draftEnd=formatter.date(from:usesCustomRange ? rangeEnd:(snapshot["period_end"] as? String ?? "")) ?? Date()
+    }
+    func choosePeriod(_ preset:String) {
+        let c=reportCalendar,today=c.startOfDay(for:Date())
+        let first=c.date(from:c.dateComponents([.year,.month],from:today)) ?? today
+        draftEnd=today
+        switch preset {
+        case "7":draftStart=c.date(byAdding:.day,value:-6,to:today) ?? today
+        case "30":draftStart=c.date(byAdding:.day,value:-29,to:today) ?? today
+        case "last":
+            draftStart=c.date(byAdding:.month,value:-1,to:first) ?? first
+            draftEnd=c.date(byAdding:.day,value:-1,to:first) ?? first
+        case "all":
+            let earliest=(snapshot["months"] as? [String] ?? []).filter{$0 != "未知月份"}.min() ?? dayString(first).prefix(7).description
+            let f=DateFormatter();f.locale=Locale(identifier:"en_US_POSIX");f.timeZone=reportZone;f.dateFormat="yyyy-MM-dd"
+            draftStart=f.date(from:earliest+"-01") ?? first
+            let latest=(snapshot["months"] as? [String] ?? []).filter{$0 != "未知月份"}.max() ?? dayString(today).prefix(7).description
+            if let monthStart=f.date(from:latest+"-01"),let next=c.date(byAdding:.month,value:1,to:monthStart),latest>dayString(today).prefix(7).description {
+                draftEnd=c.date(byAdding:.day,value:-1,to:next) ?? today
+            }
+        default:draftStart=first
         }
         applyRange()
+    }
+    var periodLabel:String {
+        if usesCustomRange {return rangeStart+" — "+rangeEnd}
+        return (snapshot["period_start"] as? String ?? month)+" — "+(snapshot["period_end"] as? String ?? "")
     }
     func resetPeriodFilters() {error="";agent="全部";selectedModel="全部模型";selectedSpeed="all";filter()}
     func switchMode() {
@@ -433,148 +489,179 @@ struct TrendPoint:Identifiable {
     let series:String
     let segment:String
 }
+struct TrendDay:Identifiable {
+    let id:String
+    let date:Date
+    let values:[String:Double]
+    let unpriced:Int
+    let incomplete:Bool
+}
 struct UsageTrend:View {
-    let days:[[String:Any]]
+    let days:[TrendDay]
     let language:String
-    @State private var metric="amount"
+    @AppStorage("trendMetrics") private var metricSelection="amount,tokens,count"
+    @AppStorage("trendTokenBreakdown") private var tokenBreakdown=false
     @State private var selection:Date?
-    private func date(_ value:Any?)->Date? {
-        guard let raw=value as? String else{return nil}
-        return ISO8601DateFormatter().date(from:raw+"T12:00:00Z")
+    init(days:[[String:Any]],language:String) {
+        self.language=language
+        let formatter=ISO8601DateFormatter()
+        self.days=days.compactMap {day in
+            guard let id=day["date"] as? String,let date=formatter.date(from:id+"T12:00:00Z") else{return nil}
+            var values:[String:Double]=[:]
+            for key in ["amount","tokens","count","cumulative","input","read","write","output"] {
+                if let n=day[key] as? NSNumber {values[key]=n.doubleValue}
+            }
+            return TrendDay(id:id,date:date,values:values,unpriced:Int(number(day["unpriced"])),incomplete:day["incomplete"] as? Bool == true)
+        }
     }
-    private var points:[TrendPoint] {
-        var result:[TrendPoint]=[];var segment=0
-        for day in days {
-            guard let d=date(day["date"]) else{continue}
-            let fields=metric == "tokens" ? [("input","输入"),("read","缓存读取"),("write","缓存写入"),("output","输出")]:[(metric,metric == "amount" ? "每日 API 等价值":metric == "cumulative" ? "累计 API 等价值":"模型请求")]
-            for (key,label) in fields {
-                guard let value=day[key] as? NSNumber else{segment+=1;continue}
-                result.append(TrendPoint(id:"\(day["date"] ?? "")-\(key)",date:d,value:value.doubleValue,series:L(label),segment:"\(key)-\(segment)"))
+    private var metrics:[String] {
+        let selected=Set(metricSelection.split(separator:",").map(String.init))
+        let result=["amount","tokens","count","cumulative"].filter{selected.contains($0)}
+        return result.isEmpty ? ["amount"]:result
+    }
+    private func enabled(_ key:String)->Binding<Bool> {
+        Binding(get:{metrics.contains(key)},set:{on in
+            var result=Set(metrics)
+            if on {result.insert(key)} else if result.count>1 {result.remove(key)}
+            metricSelection=["amount","tokens","count","cumulative"].filter{result.contains($0)}.joined(separator:",")
+        })
+    }
+    private func title(_ metric:String)->String {
+        metric == "tokens" ? "每日 Token":metric == "count" ? "每日请求":metric == "cumulative" ? "累计 API 等价值":"每日 API 等价值"
+    }
+    private func color(_ metric:String)->Color {
+        metric == "tokens" ? .blue:metric == "count" ? .orange:metric == "cumulative" ? .purple:.teal
+    }
+    private var selectedDay:TrendDay? {
+        guard !days.isEmpty else{return nil}
+        guard let selection=selection else{return days.last}
+        return days[nearestIndex(selection)]
+    }
+    private func nearestIndex(_ candidate:Date)->Int {
+        guard let first=days.first else{return 0}
+        return min(days.count-1,max(0,Int((candidate.timeIntervalSince(first.date)/86400).rounded())))
+    }
+    private func valueText(_ metric:String)->String {
+        guard let value=selectedDay?.values[metric] else{return "—"}
+        if metric == "amount" || metric == "cumulative" {return String(format:"$%.2f",value)}
+        return value.formatted(.number.precision(.fractionLength(0)).locale(Locale(identifier:"en_US")))
+    }
+    private var domain:ClosedRange<Date> {
+        let first=days.first?.date ?? Date(),last=days.last?.date ?? first
+        return first==last ? first.addingTimeInterval(-43200)...last.addingTimeInterval(43200):first...last
+    }
+    private func points(_ metric:String)->[TrendPoint] {
+        let fields=metric == "tokens" && tokenBreakdown ? [("input","输入"),("read","缓存读取"),("write","缓存写入"),("output","输出")]:[(metric,title(metric))]
+        var result:[TrendPoint]=[]
+        for (key,label) in fields {
+            var segment=0
+            for day in days {
+                guard let value=day.values[key] else{segment+=1;continue}
+                result.append(TrendPoint(id:day.id+key,date:day.date,value:value,series:L(label),segment:"\(key)-\(segment)"))
             }
         }
         return result
     }
-    private func nearestDay(to candidate:Date)->Date? {
-        days.compactMap {date($0["date"])}.min {abs($0.timeIntervalSince(candidate))<abs($1.timeIntervalSince(candidate))}
-    }
-    private var selectedDay:[String:Any]? {
-        guard let selected=selection ?? days.last.flatMap({date($0["date"])}) else{return nil}
-        return days.first {date($0["date"]) == selected}
-    }
-    private var selectedDate:Date? {selectedDay.flatMap {date($0["date"])}}
-    private var dateBounds:ClosedRange<Date>? {
-        let dates=days.compactMap {date($0["date"])}
-        guard let first=dates.first,let last=dates.last,first<=last else{return nil}
-        // DatePicker works with the selected calendar date, not the chart's noon anchor.
-        return first.addingTimeInterval(-43200)...last.addingTimeInterval(43199)
-    }
-    private var pickerDate:Binding<Date> {
-        Binding(get:{selectedDate ?? Date()},set:{value in
-            var calendar=Calendar(identifier:.gregorian);calendar.timeZone=TimeZone(secondsFromGMT:0)!
-            let noon=calendar.date(byAdding:.hour,value:12,to:calendar.startOfDay(for:value)) ?? value
-            selection=nearestDay(to:noon)
-        })
-    }
-    private var metricTitle:String {metric == "tokens" ? "每日 Token":metric == "count" ? "每日请求":metric == "cumulative" ? "累计 API 等价值":"每日 API 等价值"}
-    private func valueText(_ day:[String:Any])->String {
-        let key=metric == "tokens" ? "tokens":metric
-        guard let value=day[key] as? NSNumber else{return "—"}
-        return metric == "amount" || metric == "cumulative" ? usd(value.doubleValue):compactNumber(value.doubleValue)
-    }
-    var body:some View {
-        VStack(alignment:.leading,spacing:12) {
+    private func chart(_ metric:String)->some View {
+        VStack(alignment:.leading,spacing:6) {
             HStack {
-                LText("每日趋势").font(.system(size:12,weight:.semibold))
-                Spacer()
-                if let bounds=dateBounds {
-                    DatePicker(L("选择日期"),selection:pickerDate,in:bounds,displayedComponents:.date)
-                        .labelsHidden().controlSize(.small)
-                        .accessibilityLabel(L("选择趋势日期"))
-                        .environment(\.timeZone,TimeZone(secondsFromGMT:0)!)
-                        .environment(\.locale,Locale(identifier:language == "en" ? "en_US":"zh_CN"))
+                LText(title(metric)).foregroundStyle(.secondary)
+                if metric == "tokens" {
+                    Toggle(L("Token 分项"),isOn:$tokenBreakdown).toggleStyle(.checkbox).controlSize(.mini)
                 }
-                Picker(L("图表指标"),selection:$metric) {
-                    LText("费用").tag("amount");Text("Token").tag("tokens")
-                    LText("请求").tag("count");LText("累计费用").tag("cumulative")
-                }.labelsHidden().pickerStyle(.segmented).frame(width:290).controlSize(.small)
-            }
-            HStack(alignment:.firstTextBaseline) {
-                LText(metricTitle).foregroundStyle(.secondary)
                 Spacer()
+                Text(valueText(metric)).fontWeight(.semibold).monospacedDigit()
                 if let day=selectedDay {
-                    Text(day["date"] as? String ?? "").foregroundStyle(.secondary)
-                    Text(valueText(day)).fontWeight(.medium).monospacedDigit()
-                    if number(day["unpriced"])>0 {LText("含未定价").foregroundStyle(.orange)}
+                    if day.unpriced>0 && (metric == "amount" || metric == "cumulative") {LText("含未定价").foregroundStyle(.orange)}
+                    if day.incomplete && metric == "tokens" {LText("部分 Token 未知").foregroundStyle(.orange)}
                 }
             }.font(.system(size:10))
-            if days.isEmpty {
-                LText("所选区间尚无已收录的用量").foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:150)
-            } else {
-                Chart {
-                    ForEach(points) {point in
-                        LineMark(x:.value(L("日期"),point.date),y:.value(L(metricTitle),point.value),series:.value("Segment",point.segment))
-                            .foregroundStyle(by:.value(L("用量"),point.series))
-                            .lineStyle(StrokeStyle(lineWidth:2)).interpolationMethod(.linear)
-                        if days.count==1 || point.date == selectedDate {
-                            PointMark(x:.value(L("日期"),point.date),y:.value(L(metricTitle),point.value))
-                                .foregroundStyle(by:.value(L("用量"),point.series))
-                                .symbolSize(35)
-                        }
-                    }
-                    if let selectedDate=selectedDate {
-                        RuleMark(x:.value(L("日期"),selectedDate)).foregroundStyle(Color.secondary.opacity(0.4)).lineStyle(StrokeStyle(dash:[3,3]))
+            Chart {
+                ForEach(points(metric)) {point in
+                    LineMark(x:.value(L("日期"),point.date),y:.value(L(title(metric)),point.value),series:.value("Segment",point.segment))
+                        .foregroundStyle(by:.value(L("用量"),point.series))
+                        .lineStyle(StrokeStyle(lineWidth:2)).interpolationMethod(.linear)
+                    if days.count==1 || point.date == selectedDay?.date {
+                        PointMark(x:.value(L("日期"),point.date),y:.value(L(title(metric)),point.value))
+                            .foregroundStyle(by:.value(L("用量"),point.series)).symbolSize(28)
                     }
                 }
-                .chartForegroundStyleScale(range:[Color.teal,Color.blue,Color.orange,Color.purple])
-                .chartYScale(domain:.automatic(includesZero:true))
-                .chartXScale(range:.plotDimension(padding:16))
-                .chartXAxis {AxisMarks(values:.automatic(desiredCount:5)) {value in
-                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
-                    AxisValueLabel {if let d=value.as(Date.self) {
-                        Text(d.formatted(.dateTime.month(.twoDigits).day(.twoDigits))).font(.system(size:9)).fixedSize()
-                    }}
-                }}
-                .chartYAxis {AxisMarks(position:.leading,values:.automatic(desiredCount:4)) {value in
-                    AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
-                    AxisValueLabel {if let n=value.as(Double.self) {
-                        Text((metric == "amount" || metric == "cumulative") ? (n>0 && n<1 ? String(format:"$%.2g",n):"$"+compactNumber(n)):compactNumber(n))
-                    }}
-                }}
-                .chartLegend(position:.bottom,alignment:.leading,spacing:8)
-                .chartOverlay {proxy in
-                    GeometryReader {geometry in
-                        Rectangle().fill(Color.clear).contentShape(Rectangle()).onContinuousHover {phase in
-                            switch phase {
-                            case .active(let location):
-                                if let anchor=proxy.plotFrame {
-                                    let frame=geometry[anchor]
-                                    if location.x >= frame.minX && location.x <= frame.maxX,
-                                       let value=proxy.value(atX:location.x-frame.minX,as:Date.self) {selection=nearestDay(to:value)}
-                                }
-                            case .ended:break
-                            }
-                        }
-                        .gesture(SpatialTapGesture().onEnded {event in
-                            if let anchor=proxy.plotFrame {
-                                let frame=geometry[anchor]
-                                if event.location.x >= frame.minX && event.location.x <= frame.maxX,
-                                   let value=proxy.value(atX:event.location.x-frame.minX,as:Date.self) {selection=nearestDay(to:value)}
-                            }
-                        })
-                    }
+                if let date=selectedDay?.date {
+                    RuleMark(x:.value(L("日期"),date)).foregroundStyle(Color.secondary.opacity(0.35)).lineStyle(StrokeStyle(dash:[3,3]))
                 }
-                .environment(\.timeZone,TimeZone(secondsFromGMT:0)!)
-                .frame(height:165)
-                .onChange(of:days.compactMap {$0["date"] as? String}){selection=nil}
             }
-            LText("按账本时区汇总 · 金额仅含已定价请求 · 移动鼠标或选择日期查看每日数值").font(.system(size:9)).foregroundStyle(.secondary)
+            .chartForegroundStyleScale(range:metric == "tokens" && tokenBreakdown ? [Color.teal,.blue,.orange,.purple]:[color(metric)])
+            .chartYScale(domain:.automatic(includesZero:true))
+            .chartXScale(domain:domain,range:.plotDimension(padding:12))
+            .chartXAxis {AxisMarks(values:.automatic(desiredCount:5)) {value in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.05))
+                AxisValueLabel {if let date=value.as(Date.self) {
+                    Text(date.formatted(.dateTime.month(.twoDigits).day(.twoDigits))).font(.system(size:9)).fixedSize()
+                }}
+            }}
+            .chartYAxis {AxisMarks(position:.leading,values:.automatic(desiredCount:3)) {value in
+                AxisGridLine().foregroundStyle(Color.primary.opacity(0.06))
+                AxisValueLabel {if let n=value.as(Double.self) {
+                    Text((metric == "amount" || metric == "cumulative") ? String(format:"$%.2f",n):compactNumber(n)).font(.system(size:9)).frame(width:46,alignment:.trailing)
+                }}
+            }}
+            .chartLegend(position:.bottom,alignment:.leading,spacing:8)
+            .chartLegend(metric == "tokens" && tokenBreakdown ? .visible:.hidden)
+            .chartOverlay {proxy in
+                GeometryReader {geometry in
+                    Rectangle().fill(Color.clear).contentShape(Rectangle()).onContinuousHover {phase in
+                        if case .active(let location)=phase,let anchor=proxy.plotFrame {
+                            let frame=geometry[anchor]
+                            if location.x>=frame.minX && location.x<=frame.maxX,
+                               let date=proxy.value(atX:location.x-frame.minX,as:Date.self) {selection=days[nearestIndex(date)].date}
+                        }
+                    }.gesture(SpatialTapGesture().onEnded {event in
+                        if let anchor=proxy.plotFrame {
+                            let frame=geometry[anchor]
+                            if event.location.x>=frame.minX && event.location.x<=frame.maxX,
+                               let date=proxy.value(atX:event.location.x-frame.minX,as:Date.self) {selection=days[nearestIndex(date)].date}
+                        }
+                    })
+                }
+            }
+            .environment(\.timeZone,TimeZone(secondsFromGMT:0)!)
+            .frame(height:metric == "tokens" && tokenBreakdown ? 140:112)
+        }
+    }
+    var body:some View {
+        VStack(alignment:.leading,spacing:14) {
+            HStack(spacing:6) {
+                LText("每日趋势").fontWeight(.semibold)
+                Spacer()
+                ForEach([("amount","费用"),("tokens","Token"),("count","请求"),("cumulative","累计费用")],id:\.0) {key,label in
+                    Toggle(isOn:enabled(key)) {
+                        Label(L(label),systemImage:metrics.contains(key) ? "checkmark.circle.fill":"circle")
+                    }.toggleStyle(.button).controlSize(.small)
+                        .tint(metrics.contains(key) ? .teal:.secondary)
+                        .disabled(metrics.count==1 && metrics.contains(key))
+                }
+            }.font(.system(size:11))
+            if days.isEmpty || days.allSatisfy({($0.values["count"] ?? 0)==0}) {
+                LText("所选区间尚无已收录的用量").foregroundStyle(.secondary).frame(maxWidth:.infinity,minHeight:100)
+            } else {
+                HStack {
+                    LText("移动鼠标或点击图表查看同一天的数据").foregroundStyle(.secondary)
+                    Spacer()
+                    Text(selectedDay?.id ?? "").monospacedDigit()
+                }.font(.system(size:10))
+                ForEach(metrics,id:\.self) {metric in chart(metric)}
+            }
+            LText("按账本时区汇总 · 金额仅含已定价请求").font(.system(size:9)).foregroundStyle(.secondary)
         }.padding(14).background(Color.primary.opacity(0.035),in:RoundedRectangle(cornerRadius:14))
+            .onChange(of:days.first?.id){selection=nil}
+            .onChange(of:days.last?.id){selection=nil}
     }
 }
 
 struct CostView: View {
     @ObservedObject var model: Model
     @State private var activityView = "conversation"
+    @State private var periodPopover=false
     var expand: () -> Void
     var hide: () -> Void
     @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -600,10 +687,6 @@ struct CostView: View {
                         }.labelsHidden().pickerStyle(.segmented).controlSize(.small).frame(width:70)
                             .accessibilityLabel("Language / 语言")
                         Menu {
-                            Menu("Language / 语言") {
-                                Button("English") {model.setLanguage("en")}
-                                Button("中文") {model.setLanguage("zh-Hans")}
-                            }
                             Button(L("显示与月费")) {model.tab="设置"}
                             Button(L("官方定价与口径")) {model.tab="价格"}
                             Divider()
@@ -733,32 +816,25 @@ struct CostView: View {
             LText(value).font(.system(size:19,weight:.medium,design:.rounded)).monospacedDigit()
         }.frame(maxWidth:.infinity,alignment:.leading)
     }
+    var rangeEditor:some View {
+        RangeCalendar(start:$model.draftStart,end:$model.draftEnd,calendar:model.reportCalendar,language:model.language,
+            cancel:{periodPopover=false},apply:{if model.applyRange(){periodPopover=false}})
+    }
     var periodControls:some View {
         VStack(alignment:.leading,spacing:10) {
             HStack(spacing:10) {
-                Spacer(minLength:0)
-                Picker(L("时间范围"),selection:$model.periodMode) {
-                    LText("按月").tag("month");LText("自定义").tag("custom")
-                }.labelsHidden().pickerStyle(.segmented).frame(width:154).onChange(of:model.periodMode) {
-                    if model.periodMode == "custom" {model.beginRange()} else {model.resetPeriodFilters()}
-                }
-                if model.periodMode == "month" {
-                    Picker(L("月份"),selection:$model.month) {ForEach(model.snapshot["months"] as? [String] ?? [],id:\.self){LText($0)}}
-                        .labelsHidden().frame(width:125).onChange(of:model.month){model.resetPeriodFilters()}
-                }
+                Button {model.prepareRange();periodPopover=true} label:{
+                    Label(model.periodLabel,systemImage:"calendar").monospacedDigit()
+                }.localizedAccessibilityLabel("选择时间区间").accessibilityValue(model.periodLabel)
+                Spacer()
                 Button {model.exportDaily()} label:{Label(L("导出 CSV"),systemImage:"square.and.arrow.up")}
                     .disabled(model.loading || (model.snapshot["daily"] as? [[String:Any]] ?? []).isEmpty)
-                Spacer(minLength:0)
-            }
-            if model.periodMode == "custom" {
-                HStack(spacing:8) {
-                    Spacer(minLength:0)
-                    DatePicker(L("从"),selection:$model.draftStart,displayedComponents:.date).frame(width:202)
-                    DatePicker(L("至"),selection:$model.draftEnd,displayedComponents:.date).frame(width:202)
-                    Button(L("应用")){model.applyRange()}.buttonStyle(.borderedProminent).tint(.teal)
-                    Spacer(minLength:0)
-                }.environment(\.timeZone,model.reportZone)
-                    .environment(\.locale,Locale(identifier:model.language == "en" ? "en_US":"zh_CN"))
+            }.popover(isPresented:$periodPopover,arrowEdge:.bottom){rangeEditor}
+            HStack(spacing:8) {
+                ForEach([("7","近7天"),("30","近30天"),("month","本月"),("last","上月"),("all","全部")],id:\.0) {key,label in
+                    Button(L(label)){model.choosePeriod(key)}
+                }
+                Spacer()
             }
             HStack(spacing:8) {
                 Spacer(minLength:0)
@@ -786,7 +862,7 @@ struct CostView: View {
                     HStack(alignment:.bottom) {
                         VStack(alignment:.leading,spacing:6) {
                             LText("区间 API 等价值").font(.system(size:11)).foregroundStyle(.secondary)
-                            LText(model.loading ? "汇总中…":(number(model.snapshot["count"]) > number(model.snapshot["unpriced"]) ? money(number(model.snapshot["amount"])):"—"))
+                            LText(number(model.snapshot["count"]) > number(model.snapshot["unpriced"]) ? money(number(model.snapshot["amount"])):"—")
                                 .font(.system(size:32,weight:.medium,design:.rounded)).monospacedDigit()
                         }
                         Spacer()
@@ -795,6 +871,19 @@ struct CostView: View {
                             LText("\(Int(number(model.snapshot["count"]))) 次模型请求").font(.system(size:10)).foregroundStyle(.secondary)
                         }.padding(.bottom,4)
                     }
+                    if model.loading {
+                        HStack(spacing:6) {
+                            ProgressView().controlSize(.mini)
+                            LText("正在更新至").foregroundStyle(.secondary)
+                            Text(model.periodLabel).monospacedDigit()
+                            Spacer()
+                        }.font(.system(size:10))
+                    }
+                    HStack(spacing:4) {
+                        LText(model.loading ? "下方仍显示":"统计区间").foregroundStyle(.secondary)
+                        Text((model.snapshot["period_start"] as? String ?? "—")+" — "+(model.snapshot["period_end"] as? String ?? "—")).monospacedDigit()
+                        Spacer()
+                    }.font(.system(size:10))
                     UsageTrend(days:model.snapshot["daily"] as? [[String:Any]] ?? [],language:model.language).id(model.language)
                     HStack(spacing:5) {
                         Image(systemName:"info.circle").font(.system(size:10))
@@ -814,7 +903,7 @@ struct CostView: View {
                     }
                     dailyTable
                 }.frame(width:596,alignment:.leading).padding(.bottom,10)
-            }.opacity(model.loading ? 0.55:1)
+            }
         }
     }
     var dailyTable:some View {
